@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Menu, X } from 'lucide-react';
+import { Menu, X, Sun, Moon } from 'lucide-react';
 import { useApp } from '../store/AppContext';
 import { api } from '../utils/api';
 import { progressStore, recentStore } from '../utils/storage';
@@ -73,6 +73,10 @@ export default function MainApp() {
               const current = Array.isArray(prev) ? prev : [];
               return current.find(f => f.id === payload.file.id) ? current : [payload.file, ...current];
             });
+            // Refresh folder assignments so the file appears in the correct folder
+            api.getFileAssignments().then(res => {
+              actions.setFileAssignments(res.assignments || {});
+            }).catch(() => {});
           }
         } catch {}
       };
@@ -93,6 +97,11 @@ export default function MainApp() {
   }, [state.openFile]);
 
   useEffect(() => { setMobileSidebar(false); }, [state.activeSection, state.activeFolderId]);
+
+  // Apply theme class to body
+  useEffect(() => {
+    document.body.classList.toggle('theme-light', state.appTheme === 'light');
+  }, [state.appTheme]);
 
   // ── Determine which reader to show ──────────────────────────────────────────
   const openFile  = state.openFile;
@@ -130,6 +139,13 @@ export default function MainApp() {
             <Menu size={20} />
           </button>
           <span className="font-display font-bold text-ink-100 flex-1">AirNotes 2.0</span>
+          <button
+            onClick={() => actions.setAppTheme(state.appTheme === 'dark' ? 'light' : 'dark')}
+            className="text-ink-400 hover:text-ink-100 p-1"
+            title={state.appTheme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+          >
+            {state.appTheme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
           <button onClick={() => setShowSearch(true)} className="text-ink-400 hover:text-ink-100 p-1">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
