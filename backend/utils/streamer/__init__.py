@@ -40,11 +40,18 @@ AUDIO_MIME_TYPES = {
     '.m4a': 'audio/mp4',
 }
 
-# Chunk size per file type:
-#   PDF/EPUB → 512 KB: larger chunks mean fewer round-trips and faster initial render.
-#   Video    → 2 MB:   large chunks reduce round-trips during seek / playback.
-CHUNK_SIZE_PDF   = 512 * 1024        # 512 KB (was 256 KB)
-CHUNK_SIZE_VIDEO = 2 * 1024 * 1024   # 2 MB  (was 1 MB)
+# Chunk sizes per quality level (video):
+#   low    → 512 KB  — fast start, may buffer more during playback
+#   medium → 1 MB    — balanced (default)
+#   high   → 2 MB    — smoothest playback, slightly slower start
+# PDF/EPUB always use 512 KB regardless of quality setting.
+CHUNK_SIZE_PDF = 512 * 1024
+
+CHUNK_SIZES_VIDEO = {
+    "low":    512 * 1024,        # 512 KB
+    "medium": 1 * 1024 * 1024,   # 1 MB
+    "high":   2 * 1024 * 1024,   # 2 MB
+}
 
 
 def parse_range_header(range_header: str, file_size: int) -> tuple:
@@ -83,17 +90,17 @@ def get_mime_type(file_name: str) -> str:
     return mime_type or "application/octet-stream"
 
 
-def _choose_chunk_size(mime_type: str, file_name: str) -> int:
+def _choose_chunk_size(mime_type: str, file_name: str, quality: str = "high") -> int:
     if "video" in mime_type or "audio" in mime_type:
-        return CHUNK_SIZE_VIDEO
+        return CHUNK_SIZES_VIDEO.get(quality, CHUNK_SIZES_VIDEO["high"])
     ext = Path(file_name).suffix.lower()
     if ext in VIDEO_MIME_TYPES or ext in AUDIO_MIME_TYPES:
-        return CHUNK_SIZE_VIDEO
-    # PDF, EPUB, and everything else → small chunks
+        return CHUNK_SIZES_VIDEO.get(quality, CHUNK_SIZES_VIDEO["high"])
+    # PDF, EPUB, and everything else → fixed size
     return CHUNK_SIZE_PDF
 
 
-async def media_streamer(channel: int, message_id: int, file_name: str, request):
+async def media_streamer(channel: int, message_id: int, file_name: str, request, quality: str = "high"):
     """
     Stream Telegram files with full HTTP Range Request support.
     Automatically selects chunk size based on file type.
@@ -143,7 +150,7 @@ async def media_streamer(channel: int, message_id: int, file_name: str, request)
     until_bytes = min(until_bytes, file_size - 1)
 
     mime_type  = get_mime_type(file_name)
-    chunk_size = _choose_chunk_size(mime_type, file_name)
+    chunk_size = _choose_chunk_size(mime_type, file_name, quality)
 
     offset           = from_bytes - (from_bytes % chunk_size)
     first_part_cut   = from_bytes - offset
