@@ -41,7 +41,17 @@ export const api = {
   verifyFolderPassword: (id, hash) => request(`/folders/${encodeURIComponent(id)}/verify-password`, { method: 'POST', body: JSON.stringify({ password_hash: hash }) }),
   getFileAssignments:   () => request('/assignments'),
 
-  getStreamUrl: (fileId) => `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream`,
+  // Stream URLs — token appended as query param for <video> / <audio> tags
+  // which cannot send Authorization headers
+  getStreamUrl: (fileId) => {
+    const t = getToken();
+    return `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream${t ? '?token=' + encodeURIComponent(t) : ''}`;
+  },
+  getVideoStreamUrl: (fileId) => {
+    const t = getToken();
+    return `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream${t ? '?token=' + encodeURIComponent(t) : ''}`;
+  },
+  // PDF / EPUB use Bearer header directly — keep for backwards compat
   getStreamUrlWithToken: (fileId) => {
     const t = getToken();
     return `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream${t ? '?token=' + encodeURIComponent(t) : ''}`;
