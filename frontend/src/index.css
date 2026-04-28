@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body, #root { height: 100%; margin: 0; padding: 0; }
+  body {
+    background: #0c0c0d;
+    color: #e4e4e7;
+    font-family: 'DM Sans', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+  input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
+}
+
+@layer components {
+  .sidebar-item {
+    @apply flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm
+           text-ink-400 hover:text-ink-100 hover:bg-ink-800
+           transition-all duration-150 cursor-pointer select-none w-full;
+  }
+  .sidebar-item.active { @apply bg-ink-800 text-ink-100; }
+  .glass {
+    background: rgba(19,19,21,0.96);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .btn-primary {
+    @apply bg-accent hover:bg-accent-hover text-white font-medium
+           transition-colors duration-150 flex items-center justify-center gap-2;
+  }
+  .input-base {
+    @apply bg-ink-800 border border-ink-700 rounded-xl px-3 py-2
+           text-ink-100 text-sm placeholder-ink-500
+           focus:outline-none focus:border-accent/50 transition-all;
+  }
+  .card-base {
+    @apply rounded-2xl border border-ink-800/60 overflow-hidden
+           hover:border-ink-700/60 transition-all duration-200;
+  }
+}
