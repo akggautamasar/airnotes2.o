@@ -47,9 +47,12 @@ export const api = {
     const t = getToken();
     return `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream${t ? '?token=' + encodeURIComponent(t) : ''}`;
   },
-  getVideoStreamUrl: (fileId) => {
+  getVideoStreamUrl: (fileId, quality = 'high') => {
     const t = getToken();
-    return `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream${t ? '?token=' + encodeURIComponent(t) : ''}`;
+    const params = new URLSearchParams();
+    if (t) params.set('token', t);
+    params.set('quality', quality);
+    return `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream?${params.toString()}`;
   },
   // PDF / EPUB use Bearer header directly — keep for backwards compat
   getStreamUrlWithToken: (fileId) => {
