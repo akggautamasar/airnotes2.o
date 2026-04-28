@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: airnotes-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    envVars:
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: BOT_TOKENS
+        sync: false
+      - key: STRING_SESSIONS
+        sync: false
+      - key: STORAGE_CHANNEL
+        sync: false
+      - key: DATABASE_BACKUP_MSG_ID
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: TELEGRAM_ADMIN_IDS
+        sync: false
+      - key: WEBSITE_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+    disk:
+      name: airnotes-cache
+      mountPath: /opt/render/project/src/backend/cache
+      sizeGB: 1
