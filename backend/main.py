@@ -295,8 +295,29 @@ async def list_files(type: str = None, folder_id: str = None, user=Depends(requi
         "refresh_in_progress": _refresh_in_progress,
     }
 
+@app.head("/api/files/{file_id}/stream")
+async def stream_file_head(file_id: str, request: Request, user=Depends(require_auth)):
+    """Fast HEAD response so browsers can get Content-Length without downloading anything."""
+    if file_id not in file_cache:
+        raise HTTPException(status_code=404, detail="File not found")
+    info = file_cache[file_id]
+    file_size = info.get("size", 0)
+    mime_type = info.get("mime", "application/octet-stream") or "application/octet-stream"
+    from utils.streamer import get_mime_type
+    if not mime_type or mime_type == "application/octet-stream":
+        mime_type = get_mime_type(info["name"])
+    return Response(
+        status_code=200,
+        headers={
+            "Content-Length": str(file_size),
+            "Content-Type": mime_type,
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "public, max-age=86400",
+        }
+    )
+
 @app.get("/api/files/{file_id}/stream")
-async def stream_file(file_id: str, request: Request, user=Depends(require_auth)):
+async def stream_file(file_id: str, request: Request, quality: str = "high", user=Depends(require_auth)):
     if file_id not in file_cache:
         if not _refresh_in_progress:
             asyncio.create_task(refresh_file_cache())
@@ -304,7 +325,7 @@ async def stream_file(file_id: str, request: Request, user=Depends(require_auth)
     info = file_cache[file_id]
     # Use the stored channel_id if present (multi-channel), else fall back to primary
     channel_id = info.get("channel_id", config.STORAGE_CHANNEL)
-    return await media_streamer(channel_id, info["message_id"], info["name"], request)
+    return await media_streamer(channel_id, info["message_id"], info["name"], request, quality=quality)
 
 @app.delete("/api/files/{file_id}")
 async def delete_file(file_id: str, user=Depends(require_auth)):
