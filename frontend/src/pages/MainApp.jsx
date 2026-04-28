@@ -8,6 +8,7 @@ import Sidebar from '../components/Sidebar';
 import LibraryView from '../components/library/LibraryView';
 import PDFReader from '../components/reader/PDFReader';
 import EpubViewer from '../components/reader/EpubViewer';
+import VideoPlayer from '../components/reader/VideoPlayer';
 import SearchModal from '../components/ui/SearchModal';
 
 export default function MainApp() {
@@ -93,8 +94,11 @@ export default function MainApp() {
 
   useEffect(() => { setMobileSidebar(false); }, [state.activeSection, state.activeFolderId]);
 
-  const showPDF  = state.openFile && state.openFile.type === 'pdf';
-  const showEpub = state.openFile && state.openFile.type === 'epub';
+  // ── Determine which reader to show ──────────────────────────────────────────
+  const openFile  = state.openFile;
+  const showPDF   = openFile && openFile.type === 'pdf';
+  const showEpub  = openFile && openFile.type === 'epub';
+  const showVideo = openFile && openFile.type === 'video';
 
   return (
     <div className="h-screen flex overflow-hidden bg-ink-950 text-ink-100">
@@ -135,10 +139,11 @@ export default function MainApp() {
         <LibraryView onSearch={() => setShowSearch(true)} />
       </div>
 
-      {/* Readers */}
+      {/* Readers / Players */}
       <AnimatePresence>
-        {showPDF  && <PDFReader key="pdf" />}
-        {showEpub && <EpubViewer key="epub" />}
+        {showPDF   && <PDFReader   key="pdf" />}
+        {showEpub  && <EpubViewer  key="epub" />}
+        {showVideo && <VideoPlayer key="video" />}
       </AnimatePresence>
 
       {/* Search modal */}
