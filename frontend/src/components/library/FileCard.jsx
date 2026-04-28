@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { FileText, BookOpen, Clock, MoreVertical, FolderPlus, FolderMinus, Trash2, Pencil, Copy, Check, X } from 'lucide-react';
+import { FileText, BookOpen, Film, Clock, MoreVertical, FolderPlus, FolderMinus, Trash2, Pencil, Copy, Check, X } from 'lucide-react';
 import { useApp } from '../../store/AppContext';
 import { api } from '../../utils/api';
 import { progressStore, recentStore } from '../../utils/storage';
@@ -21,6 +21,7 @@ export default function FileCard({ file, progress, thumbnail, listMode = false, 
   const pct      = progress?.percent || 0;
   const isPdf    = file.type === 'pdf';
   const isEpub   = file.type === 'epub';
+  const isVideo  = file.type === 'video';
 
   useEffect(() => {
     if (!showMenu) return;
@@ -79,20 +80,30 @@ export default function FileCard({ file, progress, thumbnail, listMode = false, 
       const res = await api.renameFile(file.id, trimmed);
       actions.setFiles(state.files.map(f => f.id === file.id ? res.file : f));
     } catch (e) { alert(e.message); }
-    setRenaming(false); setLoading(null);
+    setLoading(null);
+    setRenaming(false);
   }
 
   const currentFolder    = state.fileAssignments[file.id];
   const availableFolders = state.folders.filter(f => f.id !== currentFolder);
   const busy = loading !== null;
 
+  // ── Type badge ─────────────────────────────────────────────────────────────
   const typeIcon = isPdf
     ? <FileText size={11} className="text-red-400/70" />
-    : <BookOpen size={11} className="text-blue-400/70" />;
-  const typeLabel = isPdf ? 'PDF' : 'EPUB';
-  const typeBadgeColor = isPdf ? 'bg-red-500/10 text-red-400/80' : 'bg-blue-500/10 text-blue-400/80';
+    : isEpub
+      ? <BookOpen size={11} className="text-blue-400/70" />
+      : <Film size={11} className="text-purple-400/70" />;
 
-  // ── List mode ──────────────────────────────────────────────────────────
+  const typeLabel = isPdf ? 'PDF' : isEpub ? 'EPUB' : 'VIDEO';
+
+  const typeBadgeColor = isPdf
+    ? 'bg-red-500/10 text-red-400/80'
+    : isEpub
+      ? 'bg-blue-500/10 text-blue-400/80'
+      : 'bg-purple-500/10 text-purple-400/80';
+
+  // ── List mode ──────────────────────────────────────────────────────────────
   if (listMode) {
     return (
       <div
@@ -100,165 +111,187 @@ export default function FileCard({ file, progress, thumbnail, listMode = false, 
                     border border-transparent hover:border-ink-700/30 transition-all duration-150 ${renaming ? '' : 'cursor-pointer'}`}
         onClick={renaming ? undefined : openFile}
       >
-        {/* Type icon */}
-        <div className="w-7 h-9 rounded-md flex items-center justify-center shrink-0 text-white"
-             style={{ background: color }}>
-          {busy ? <span className="text-xs animate-pulse">⌛</span> : <span className="text-[10px] font-bold">{initials}</span>}
+        {/* Avatar */}
+        <div
+          className="w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs font-bold shrink-0"
+          style={{ background: color }}
+        >
+          {thumbnail
+            ? <img src={thumbnail} alt="" className="w-full h-full object-cover rounded-lg" />
+            : initials}
         </div>
 
         {/* Name */}
         <div className="flex-1 min-w-0">
           {renaming ? (
             <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-              <input ref={renameRef} value={renameVal} onChange={e => setRenameVal(e.target.value)}
+              <input
+                ref={renameRef}
+                value={renameVal}
+                onChange={e => setRenameVal(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') submitRename(); if (e.key === 'Escape') setRenaming(false); }}
-                className="flex-1 bg-ink-800 text-ink-100 text-xs px-2 py-0.5 rounded border border-ink-600 outline-none focus:border-accent/50" />
-              <button onClick={submitRename} className="text-green-400 p-0.5"><Check size={12}/></button>
-              <button onClick={() => setRenaming(false)} className="text-red-400 p-0.5"><X size={12}/></button>
+                className="flex-1 bg-ink-700 text-ink-100 text-sm rounded px-2 py-0.5 outline-none border border-accent/40"
+              />
+              <button onClick={submitRename} className="p-0.5 text-green-400 hover:text-green-300"><Check size={13}/></button>
+              <button onClick={() => setRenaming(false)} className="p-0.5 text-ink-500 hover:text-ink-300"><X size={13}/></button>
             </div>
           ) : (
-            <>
-              <p className="text-ink-100 text-xs font-medium truncate">{title}</p>
-              <div className="flex items-center gap-1 mt-0.5">
-                {typeIcon}
-                <span className="text-[10px] text-ink-600">{typeLabel}</span>
-              </div>
-            </>
+            <p className="text-sm text-ink-200 truncate leading-tight">{title}</p>
           )}
+          <p className="text-xs text-ink-500 mt-0.5">{formatSize(file.size)} · {formatRelativeDate(file.date)}</p>
         </div>
 
-        <span className="w-16 text-right text-ink-600 text-xs shrink-0 hidden sm:block">{formatSize(file.size)}</span>
-        <span className="w-20 text-right text-ink-600 text-xs shrink-0 hidden md:block">{formatRelativeDate(file.date)}</span>
+        {/* Badge */}
+        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md flex items-center gap-1 ${typeBadgeColor}`}>
+          {typeIcon} {typeLabel}
+        </span>
 
-        {/* Progress bar */}
-        <div className="w-16 shrink-0 hidden sm:block">
-          {pct > 0 && <div className="text-right text-[10px] text-ink-600 mb-0.5">{pct}%</div>}
-          <div className="h-0.5 bg-ink-800 rounded-full overflow-hidden">
-            {pct > 0 && <div className="h-full bg-accent/60 rounded-full" style={{ width: `${pct}%` }} />}
+        {/* Progress bar (PDF/EPUB only) */}
+        {(isPdf || isEpub) && pct > 0 && (
+          <div className="w-16 h-1 bg-ink-700 rounded-full overflow-hidden">
+            <div className="h-full bg-accent rounded-full" style={{ width: `${pct}%` }} />
           </div>
-        </div>
+        )}
 
         {/* Menu */}
-        <div className="w-6 shrink-0 relative" ref={menuRef} onClick={e => e.stopPropagation()}>
-          <button onClick={() => setShowMenu(!showMenu)}
-            className="opacity-0 group-hover:opacity-100 text-ink-500 hover:text-ink-200 transition-all p-1">
-            <MoreVertical size={13} />
+        <div className="relative" onClick={e => e.stopPropagation()} ref={menuRef}>
+          <button
+            onClick={() => setShowMenu(v => !v)}
+            className="p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-ink-700/50 text-ink-400 transition"
+          >
+            <MoreVertical size={14} />
           </button>
-          {showMenu && <FileMenu {...{ availableFolders, currentFolder, onAssign: assignToFolder, onRemove: removeFromFolder, onDelete: handleDelete, onCopy: handleCopy, onRename: () => { setRenameVal(title); setRenaming(true); setShowMenu(false); }, onClose: () => setShowMenu(false) }} />}
+          {showMenu && <ContextMenu
+            file={file} title={title} currentFolder={currentFolder}
+            availableFolders={availableFolders} busy={busy}
+            onAssign={assignToFolder} onRemove={removeFromFolder}
+            onRename={() => { setRenameVal(title); setRenaming(true); setShowMenu(false); }}
+            onCopy={handleCopy} onDelete={handleDelete}
+          />}
         </div>
       </div>
     );
   }
 
-  // ── Grid card ──────────────────────────────────────────────────────────
+  // ── Grid mode ──────────────────────────────────────────────────────────────
   return (
     <motion.div
-      whileHover={{ y: -2 }}
-      className={`group relative rounded-2xl border border-ink-800/50 overflow-hidden
-                  hover:border-ink-700/60 hover:shadow-xl hover:shadow-black/40
-                  transition-all duration-200 bg-ink-900 ${renaming ? '' : 'cursor-pointer'}`}
+      layout
+      whileHover={{ y: -1 }}
+      className={`group relative rounded-2xl border border-ink-800/50 bg-ink-900/50
+                  hover:border-ink-700/60 hover:bg-ink-800/60 transition-all duration-200
+                  overflow-hidden ${renaming ? '' : 'cursor-pointer'}`}
       onClick={renaming ? undefined : openFile}
     >
-      {/* Thumbnail / cover */}
-      <div className="relative h-36 overflow-hidden flex items-center justify-center"
-           style={{ background: thumbnail ? undefined : `linear-gradient(135deg, ${color}cc, ${color}66)` }}>
+      {/* Thumbnail / Avatar area */}
+      <div
+        className="h-28 flex items-center justify-center relative overflow-hidden"
+        style={thumbnail ? {} : { background: `${color}18` }}
+      >
         {thumbnail ? (
-          <img src={thumbnail} alt={title} className="w-full h-full object-cover" />
+          <img src={thumbnail} alt="" className="w-full h-full object-cover" />
         ) : (
-          <div className="text-center px-2">
-            <p className="text-white/90 font-bold font-display text-2xl leading-none mb-1">
-              {busy ? '⌛' : initials}
-            </p>
-            <div className="flex items-center justify-center gap-1 text-white/50">
-              {typeIcon}
-              <span className="text-[9px] font-mono">{typeLabel}</span>
+          <span className="text-4xl font-bold select-none" style={{ color: `${color}60` }}>
+            {initials}
+          </span>
+        )}
+
+        {/* Video play icon overlay */}
+        {isVideo && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-10 h-10 rounded-full bg-black/50 flex items-center justify-center">
+              <Film size={18} className="text-white" />
             </div>
           </div>
         )}
 
-        {/* Progress strip */}
-        {pct > 0 && (
-          <div className="absolute bottom-0 left-0 right-0 h-1 bg-black/30">
-            <div className="h-full bg-accent/70 transition-all" style={{ width: `${pct}%` }} />
+        {/* Progress overlay (PDF/EPUB only) */}
+        {(isPdf || isEpub) && pct > 0 && (
+          <div className="absolute bottom-0 left-0 right-0 h-1 bg-ink-800/80">
+            <div className="h-full bg-accent transition-all" style={{ width: `${pct}%` }} />
           </div>
         )}
 
-        {/* Type badge */}
-        <div className={`absolute top-2 left-2 text-[9px] font-semibold px-1.5 py-0.5 rounded-md ${typeBadgeColor}`}>
-          {typeLabel}
-        </div>
-
-        {/* 3-dot menu */}
-        <div ref={menuRef} className="absolute top-2 right-2" onClick={e => e.stopPropagation()}>
+        {/* Menu button */}
+        <div
+          className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
+          onClick={e => e.stopPropagation()}
+          ref={menuRef}
+        >
           <button
-            onClick={() => setShowMenu(!showMenu)}
-            className="opacity-0 group-hover:opacity-100 transition-all p-1.5 rounded-lg bg-black/50 backdrop-blur-sm text-white/70 hover:text-white"
+            onClick={() => setShowMenu(v => !v)}
+            className="w-6 h-6 rounded-lg bg-ink-900/80 flex items-center justify-center text-ink-400 hover:text-ink-100"
           >
             <MoreVertical size={12} />
           </button>
-          {showMenu && (
-            <div className="absolute top-8 right-0 z-20">
-              <FileMenu {...{ availableFolders, currentFolder, onAssign: assignToFolder, onRemove: removeFromFolder, onDelete: handleDelete, onCopy: handleCopy, onRename: () => { setRenameVal(title); setRenaming(true); setShowMenu(false); }, onClose: () => setShowMenu(false) }} />
-            </div>
-          )}
+          {showMenu && <ContextMenu
+            file={file} title={title} currentFolder={currentFolder}
+            availableFolders={availableFolders} busy={busy}
+            onAssign={assignToFolder} onRemove={removeFromFolder}
+            onRename={() => { setRenameVal(title); setRenaming(true); setShowMenu(false); }}
+            onCopy={handleCopy} onDelete={handleDelete}
+          />}
         </div>
       </div>
 
-      {/* Footer */}
-      <div className="px-2.5 py-2 bg-ink-900">
+      {/* Info */}
+      <div className="px-3 py-2.5">
         {renaming ? (
           <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-            <input ref={renameRef} value={renameVal} onChange={e => setRenameVal(e.target.value)}
+            <input
+              ref={renameRef}
+              value={renameVal}
+              onChange={e => setRenameVal(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') submitRename(); if (e.key === 'Escape') setRenaming(false); }}
-              className="flex-1 bg-ink-800 text-ink-100 text-xs px-2 py-0.5 rounded border border-ink-600 outline-none" />
-            <button onClick={submitRename} className="text-green-400"><Check size={11}/></button>
-            <button onClick={() => setRenaming(false)} className="text-red-400"><X size={11}/></button>
+              className="flex-1 bg-ink-700 text-ink-100 text-sm rounded px-2 py-0.5 outline-none border border-accent/40"
+            />
+            <button onClick={submitRename} className="p-0.5 text-green-400"><Check size={12}/></button>
+            <button onClick={() => setRenaming(false)} className="p-0.5 text-ink-500"><X size={12}/></button>
           </div>
         ) : (
-          <p className="text-ink-100 text-xs font-medium truncate leading-snug mb-1" title={title}>{title}</p>
+          <p className="text-sm font-medium text-ink-100 truncate leading-tight">{title}</p>
         )}
-        <div className="flex items-center justify-between text-ink-600 text-[10px]">
-          <span>{formatSize(file.size)}</span>
-          <span className="flex items-center gap-0.5"><Clock size={9} />{formatRelativeDate(file.date)}</span>
+        <div className="flex items-center justify-between mt-1.5">
+          <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md flex items-center gap-1 ${typeBadgeColor}`}>
+            {typeIcon}{typeLabel}
+          </span>
+          <span className="text-[10px] text-ink-500">{formatSize(file.size)}</span>
         </div>
       </div>
     </motion.div>
   );
 }
 
-function FileMenu({ availableFolders, currentFolder, onAssign, onRemove, onDelete, onCopy, onRename, onClose }) {
+// ── Shared context menu ────────────────────────────────────────────────────────
+function ContextMenu({ file, title, currentFolder, availableFolders, busy, onAssign, onRemove, onRename, onCopy, onDelete }) {
   return (
-    <div className="glass rounded-xl shadow-2xl min-w-[160px] py-1.5 z-50" onMouseLeave={onClose}>
-      <button onClick={onRename}
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-ink-300 hover:bg-ink-700/40">
-        <Pencil size={11} /> Rename
+    <div className="absolute right-0 top-8 z-50 w-44 bg-ink-850 border border-ink-700/60 rounded-xl shadow-2xl overflow-hidden py-1">
+      <button onClick={onRename} disabled={busy} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-ink-300 hover:bg-ink-700/50 transition">
+        <Pencil size={12}/> Rename
       </button>
-      <button onClick={onCopy}
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-ink-300 hover:bg-ink-700/40">
-        <Copy size={11} /> Duplicate
+      <button onClick={onCopy} disabled={busy} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-ink-300 hover:bg-ink-700/50 transition">
+        <Copy size={12}/> {loading === 'copy' ? 'Copying…' : 'Duplicate'}
       </button>
-      <button onClick={onDelete}
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10">
-        <Trash2 size={11} /> Delete
-      </button>
-      {(currentFolder || availableFolders.length > 0) && <div className="border-t border-ink-700/40 my-1" />}
-      {currentFolder && (
-        <button onClick={onRemove}
-          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-ink-400 hover:bg-ink-700/40">
-          <FolderMinus size={11} /> Remove from folder
-        </button>
-      )}
       {availableFolders.length > 0 && (
-        <>
-          <p className="px-3 py-1 text-[10px] text-ink-600 uppercase tracking-wider">Add to folder</p>
-          {availableFolders.map(f => (
-            <button key={f.id} onClick={() => onAssign(f.id)}
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-ink-300 hover:bg-ink-700/40">
-              <FolderPlus size={11} /> {f.name}
+        <div className="border-t border-ink-700/40 pt-1 mt-1">
+          <p className="px-3 py-1 text-[10px] text-ink-500 uppercase tracking-wider">Move to folder</p>
+          {availableFolders.slice(0, 5).map(f => (
+            <button key={f.id} onClick={() => onAssign(f.id)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-ink-300 hover:bg-ink-700/50 transition">
+              <FolderPlus size={12}/> {f.name}
             </button>
           ))}
-        </>
+        </div>
       )}
+      {currentFolder && (
+        <button onClick={onRemove} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-ink-300 hover:bg-ink-700/50 transition border-t border-ink-700/40">
+          <FolderMinus size={12}/> Remove from folder
+        </button>
+      )}
+      <div className="border-t border-ink-700/40 mt-1 pt-1">
+        <button onClick={onDelete} disabled={busy} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-400 hover:bg-red-500/10 transition">
+          <Trash2 size={12}/> Delete
+        </button>
+      </div>
     </div>
   );
 }
