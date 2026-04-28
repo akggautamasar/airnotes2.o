@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Grid, List, RefreshCw, AlertCircle, BookOpen, Loader2, BookMarked, Clock, Folder as FolderIcon } from 'lucide-react';
+import { Grid, List, RefreshCw, AlertCircle, BookOpen, Loader2, BookMarked, Clock, Folder as FolderIcon, Sun, Moon } from 'lucide-react';
 import { useApp } from '../../store/AppContext';
 import { api } from '../../utils/api';
 import { progressStore, recentStore } from '../../utils/storage';
@@ -18,7 +18,7 @@ export default function LibraryView({ onSearch }) {
   const [refreshing, setRefreshing]     = useState(false);
   const [thumbLoading, setThumbLoading] = useState(false);
   const [lockModal, setLockModal]       = useState(null);
-  const [typeFilter, setTypeFilter]     = useState('all'); // 'all'|'pdf'|'epub'
+  const [typeFilter, setTypeFilter]     = useState('all'); // 'all'|'pdf'|'epub'|'video'
 
   useEffect(() => { loadProgress(); }, []);
   useEffect(() => {
@@ -39,11 +39,16 @@ export default function LibraryView({ onSearch }) {
     if (pdfs.length === 0) return;
     setThumbLoading(true);
     try {
-      const newThumbs = await generateThumbnailsBatch(
-        pdfs, api.getStreamUrl, api.authHeaders(),
-        () => {}
-      );
-      setThumbnails(prev => ({ ...prev, ...newThumbs }));
+      // Generate thumbnails in batches of 6 to avoid overloading
+      const BATCH = 6;
+      for (let i = 0; i < Math.min(pdfs.length, 24); i += BATCH) {
+        const batch = pdfs.slice(i, i + BATCH);
+        const newThumbs = await generateThumbnailsBatch(
+          batch, api.getStreamUrl, api.authHeaders(),
+          () => {}
+        );
+        setThumbnails(prev => ({ ...prev, ...newThumbs }));
+      }
     } catch {}
     setThumbLoading(false);
   }
@@ -160,13 +165,22 @@ export default function LibraryView({ onSearch }) {
         <div className="flex items-center gap-1 ml-auto shrink-0">
           {/* Type filter */}
           <div className="flex items-center bg-ink-800/60 rounded-lg p-0.5 mr-2">
-            {['all','pdf','epub'].map(t => (
+            {['all','pdf','epub','video'].map(t => (
               <button key={t} onClick={() => setTypeFilter(t)}
                 className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${typeFilter === t ? 'bg-ink-700 text-ink-100' : 'text-ink-500 hover:text-ink-300'}`}>
                 {t === 'all' ? 'All' : t.toUpperCase()}
               </button>
             ))}
           </div>
+
+          {/* Theme toggle */}
+          <button
+            onClick={() => actions.setAppTheme(state.appTheme === 'dark' ? 'light' : 'dark')}
+            className="p-1.5 rounded-lg text-ink-500 hover:text-ink-300 transition-colors mr-1"
+            title={state.appTheme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+          >
+            {state.appTheme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+          </button>
 
           {/* View toggle */}
           <button onClick={() => actions.setViewMode('grid')}
