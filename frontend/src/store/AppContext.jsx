@@ -15,6 +15,7 @@ const initialState = {
   fileAssignments: {},
   openFile: null,
   readerMode: localStorage.getItem('readerMode') || 'dark',
+  appTheme: localStorage.getItem('appTheme') || 'dark',
   recentFiles: [],
   progress: {},
   unlockedFolders: [],
@@ -46,6 +47,9 @@ function reducer(state, action) {
     case 'SET_READER_MODE':
       localStorage.setItem('readerMode', action.payload);
       return { ...state, readerMode: action.payload };
+    case 'SET_APP_THEME':
+      localStorage.setItem('appTheme', action.payload);
+      return { ...state, appTheme: action.payload };
     case 'SET_RECENT': return { ...state, recentFiles: action.payload };
     case 'ADD_RECENT': {
       const updated = [action.payload, ...state.recentFiles.filter(r => r.fileId !== action.payload.fileId)].slice(0, 20);
@@ -79,6 +83,7 @@ export function AppProvider({ children }) {
     openFile:           useCallback((f) => dispatch({ type: 'OPEN_FILE', payload: f }), []),
     closeFile:          useCallback(() => dispatch({ type: 'CLOSE_FILE' }), []),
     setReaderMode:      useCallback((m) => dispatch({ type: 'SET_READER_MODE', payload: m }), []),
+    setAppTheme:        useCallback((t) => dispatch({ type: 'SET_APP_THEME', payload: t }), []),
     setRecent:          useCallback((r) => dispatch({ type: 'SET_RECENT', payload: r }), []),
     addRecent:          useCallback((r) => dispatch({ type: 'ADD_RECENT', payload: r }), []),
     saveProgress:       useCallback((fileId, data) => dispatch({ type: 'SAVE_PROGRESS', fileId, data }), []),
