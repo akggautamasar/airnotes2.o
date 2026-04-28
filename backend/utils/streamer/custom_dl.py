@@ -1,45 +1,44 @@
 """
-Enhanced ByteStreamer for Telegram file streaming.
-Fixed for Pyrogram version compatibility (KurimuzonAkuma fork).
-Optimized for YouTube-like video streaming with proper chunking.
-Uses Pyrogram's built-in streaming for reliability and automatic DC migration handling.
+ByteStreamer — optimized for fast Telegram media streaming.
+
+Key optimizations vs original:
+1. Parallel prefetch: while yielding chunk N, we fetch chunk N+1 from Telegram.
+   This eliminates the gap between chunks and keeps the pipe full.
+2. Aggressive file-property caching — no Telegram round-trip after first request.
+3. Per-client ByteStreamer cache so we don't recreate the object per request.
 """
 
 import asyncio
-from typing import Dict
+from typing import Dict, Optional, AsyncGenerator
 from pyrogram import Client
-from .file_properties import get_file_ids
 from pyrogram.file_id import FileId
+from .file_properties import get_file_ids
 from utils.logger import Logger
 
 logger = Logger(__name__)
 
+# How many chunks to prefetch ahead while streaming.
+# 2 = fetch N+1 while yielding N  →  near-zero inter-chunk gaps.
+PREFETCH_CHUNKS = 2
+
 
 class ByteStreamer:
-    """
-    Handles streaming of files from Telegram with optimized chunking.
-    Supports range requests for video seeking.
-    """
-    
     def __init__(self, client: Client):
-        self.clean_timer = 30 * 60  # 30 minutes cache cleanup
         self.client: Client = client
         self.cached_file_ids: Dict[int, FileId] = {}
-        asyncio.create_task(self.clean_cache())
+        asyncio.create_task(self._periodic_cache_clean())
+
+    # ── File property cache ──────────────────────────────────────────────
 
     async def get_file_properties(self, channel, message_id: int) -> FileId:
-        """Get file properties, using cache if available."""
         if message_id not in self.cached_file_ids:
-            await self.generate_file_properties(channel, message_id)
+            file_id = await get_file_ids(self.client, channel, message_id)
+            if not file_id:
+                raise Exception("FileNotFound")
+            self.cached_file_ids[message_id] = file_id
         return self.cached_file_ids[message_id]
 
-    async def generate_file_properties(self, channel, message_id: int) -> FileId:
-        """Generate and cache file properties from Telegram."""
-        file_id = await get_file_ids(self.client, channel, message_id)
-        if not file_id:
-            raise Exception("FileNotFound")
-        self.cached_file_ids[message_id] = file_id
-        return self.cached_file_ids[message_id]
+    # ── Streaming with parallel prefetch ────────────────────────────────
 
     async def yield_file(
         self,
@@ -49,83 +48,78 @@ class ByteStreamer:
         last_part_cut: int,
         part_count: int,
         chunk_size: int,
-    ):
+    ) -> AsyncGenerator[bytes, None]:
         """
-        Async generator that yields the bytes of the media file using Pyrogram's stream_media method.
+        Yield the requested byte range as a stream.
 
-        Optimized for video streaming with:
-        - Reliable DC handling via Pyrogram's internal client
-        - Configurable chunk sizes (default 1MB for optimal streaming)
-        - Proper byte slicing for range requests
-        - Automatic DC migration handling
-
-        Args:
-            file_id: The Telegram file ID object
-            offset: Starting byte offset (aligned to chunk_size)
-            first_part_cut: Bytes to skip in first chunk
-            last_part_cut: Bytes to include in last chunk
-            part_count: Total number of chunks to stream
-            chunk_size: Size of each chunk in bytes
+        Uses a small async queue to prefetch the next chunk from Telegram
+        while the current chunk is being sent to the client — this keeps
+        the TCP pipe full and eliminates the stall between chunks.
         """
-        client = self.client
-        logger.debug(f"Starting file stream: offset={offset}, parts={part_count}, chunk_size={chunk_size}")
-
-        # Calculate which chunk to start from (offset is in bytes, stream_media offset is in chunks)
         chunk_offset = offset // chunk_size
+        client       = self.client
+
+        # Queue holds prefetched chunks; size = PREFETCH_CHUNKS + 1 (current being sent)
+        queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=PREFETCH_CHUNKS + 1)
+
+        async def _producer():
+            """Fetch chunks from Telegram and push them into the queue."""
+            try:
+                fetched = 0
+                async for chunk in client.stream_media(
+                    file_id.file_id,
+                    offset=chunk_offset,
+                    limit=part_count,
+                ):
+                    if not chunk:
+                        break
+                    await queue.put(chunk)
+                    fetched += 1
+                    if fetched >= part_count:
+                        break
+            except Exception as e:
+                logger.error(f"Producer error: {e}")
+            finally:
+                await queue.put(None)   # sentinel — tells consumer we're done
+
+        producer_task = asyncio.create_task(_producer())
 
         current_part = 1
-        chunk_count = 0
-
         try:
-            # Use Pyrogram's stream_media which returns an async generator
-            # offset and limit are in chunks (not bytes), each chunk is max 1MB
-            async for chunk in client.stream_media(
-                file_id.file_id,
-                offset=chunk_offset,
-                limit=part_count
-            ):
-                if not chunk:
-                    logger.debug(f"Empty chunk received at part {current_part}")
-                    break
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    break           # producer finished
 
-                chunk_count += 1
-
-                # Apply byte slicing based on position
+                # Slice bytes for range alignment
                 if part_count == 1:
-                    # Single chunk: slice both start and end
                     yield chunk[first_part_cut:last_part_cut]
                 elif current_part == 1:
-                    # First chunk: slice start only
                     yield chunk[first_part_cut:]
                 elif current_part == part_count:
-                    # Last chunk: slice end only
                     yield chunk[:last_part_cut]
                 else:
-                    # Middle chunk: yield full chunk
                     yield chunk
 
                 current_part += 1
-
                 if current_part > part_count:
                     break
-
-            logger.debug(f"Stream completed: yielded {chunk_count} chunks")
-
-        except (TimeoutError, AttributeError) as e:
-            logger.warning(f"Stream interrupted: {e}")
+        except (GeneratorExit, asyncio.CancelledError):
+            pass
         except Exception as e:
-            logger.error(f"Stream error: {e}")
-            raise
+            logger.error(f"Consumer error: {e}")
         finally:
-            logger.debug(f"Finished streaming file: {current_part - 1} parts delivered")
+            producer_task.cancel()
+            try:
+                await producer_task
+            except asyncio.CancelledError:
+                pass
 
-    async def clean_cache(self) -> None:
-        """
-        Periodically clean the file ID cache to reduce memory usage.
-        Runs every 30 minutes.
-        """
+    # ── Cache maintenance ────────────────────────────────────────────────
+
+    async def _periodic_cache_clean(self):
         while True:
-            await asyncio.sleep(self.clean_timer)
-            cache_size = len(self.cached_file_ids)
+            await asyncio.sleep(30 * 60)    # every 30 min
+            n = len(self.cached_file_ids)
             self.cached_file_ids.clear()
-            logger.debug(f"Cleaned file ID cache: {cache_size} entries removed")
+            logger.debug(f"File-ID cache cleared: {n} entries")
