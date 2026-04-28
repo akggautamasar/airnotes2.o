@@ -105,12 +105,73 @@ async def require_auth(request: Request, credentials: HTTPAuthorizationCredentia
     except pyjwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-# ─── Cache refresh ────────────────────────────────────────────────────────────
+# ─── Cache refresh (multi-channel) ───────────────────────────────────────────
 _refresh_lock = asyncio.Lock()
 _refresh_in_progress = False
 _last_refresh: Optional[datetime] = None
 REFRESH_INTERVAL_SECONDS = 5 * 60
 FULL_SCAN_LIMIT = 10_000
+
+async def refresh_channel(client, channel_id: int, new_cache: Dict):
+    """Scan a single channel and populate new_cache with its files."""
+    anchor_id = config.DATABASE_BACKUP_MSG_ID
+    upper_id  = anchor_id
+
+    # Find the highest existing message ID for this channel in file_cache
+    channel_prefix = f"ch{channel_id}_msg_"
+    legacy_prefix  = "msg_"  # backwards compat for single-channel setups
+    for key, v in file_cache.items():
+        if key.startswith(channel_prefix) or (channel_id == config.STORAGE_CHANNEL and key.startswith(legacy_prefix)):
+            mid = v.get("message_id", 0)
+            if mid > upper_id:
+                upper_id = mid
+
+    # Probe for upper bound
+    for probe_ids in [
+        list(range(anchor_id + 1, anchor_id + 501, 50)),
+        list(range(upper_id + 1, upper_id + 101)),
+    ]:
+        try:
+            msgs = await client.get_messages(channel_id, probe_ids)
+            for m in msgs:
+                if m and not m.empty and m.id > upper_id:
+                    upper_id = m.id
+        except Exception:
+            pass
+
+    start_id = max(1, upper_id - FULL_SCAN_LIMIT)
+    for batch_start in range(upper_id, start_id - 1, -200):
+        batch_end = max(batch_start - 199, start_id)
+        ids = list(range(batch_start, batch_end - 1, -1))
+        try:
+            messages = await client.get_messages(channel_id, ids)
+        except Exception as e:
+            logger.warning(f"Batch fetch failed for channel {channel_id}: {e}")
+            continue
+
+        for message in messages:
+            if not message or message.empty:
+                continue
+            media = getattr(message, "document", None) or getattr(message, "video", None)
+            if not media:
+                continue
+            mime  = getattr(media, "mime_type", "") or ""
+            fname = getattr(media, "file_name", "") or f"file_{message.id}"
+            ftype = file_type(mime, fname)
+            if ftype == "other":
+                continue
+            # Use channel-scoped key; primary channel keeps old key format for backwards compat
+            if channel_id == config.STORAGE_CHANNEL:
+                key = f"msg_{message.id}"
+            else:
+                key = f"ch{channel_id}_msg_{message.id}"
+            new_cache[key] = {
+                "id": key, "message_id": message.id, "channel_id": channel_id,
+                "name": fname, "size": getattr(media, "file_size", 0),
+                "date": message.date.timestamp() if message.date else 0,
+                "caption": message.caption or "", "type": ftype, "mime": mime,
+            }
+        await asyncio.sleep(0.1)
 
 async def refresh_file_cache():
     global _refresh_in_progress, _last_refresh
@@ -122,62 +183,23 @@ async def refresh_file_cache():
             client = get_client()
             new_cache: Dict[str, Dict] = {}
 
-            anchor_id = config.DATABASE_BACKUP_MSG_ID
-            upper_id  = anchor_id
-
-            if file_cache:
-                max_cached = max((v.get("message_id", 0) for v in file_cache.values()), default=0)
-                if max_cached > upper_id:
-                    upper_id = max_cached
-
-            for probe_ids in [
-                list(range(anchor_id + 1, anchor_id + 501, 50)),
-                list(range(upper_id + 1, upper_id + 101)),
-            ]:
-                try:
-                    msgs = await client.get_messages(config.STORAGE_CHANNEL, probe_ids)
-                    for m in msgs:
-                        if m and not m.empty and m.id > upper_id:
-                            upper_id = m.id
-                except Exception:
-                    pass
-
-            start_id = max(1, upper_id - FULL_SCAN_LIMIT)
-            for batch_start in range(upper_id, start_id - 1, -200):
-                batch_end = max(batch_start - 199, start_id)
-                ids = list(range(batch_start, batch_end - 1, -1))
-                try:
-                    messages = await client.get_messages(config.STORAGE_CHANNEL, ids)
-                except Exception as e:
-                    logger.warning(f"Batch fetch failed: {e}")
+            channels = config.STORAGE_CHANNELS if config.STORAGE_CHANNELS else [config.STORAGE_CHANNEL]
+            for channel_id in channels:
+                if not channel_id:
                     continue
-
-                for message in messages:
-                    if not message or message.empty:
-                        continue
-                    media = getattr(message, "document", None) or getattr(message, "video", None)
-                    if not media:
-                        continue
-                    mime  = getattr(media, "mime_type", "") or ""
-                    fname = getattr(media, "file_name", "") or f"file_{message.id}"
-                    ftype = file_type(mime, fname)
-                    if ftype == "other":
-                        continue
-                    key = f"msg_{message.id}"
-                    new_cache[key] = {
-                        "id": key, "message_id": message.id, "name": fname,
-                        "size": getattr(media, "file_size", 0),
-                        "date": message.date.timestamp() if message.date else 0,
-                        "caption": message.caption or "", "type": ftype, "mime": mime,
-                    }
-                await asyncio.sleep(0.1)
+                try:
+                    await refresh_channel(client, channel_id, new_cache)
+                    logger.info(f"Channel {channel_id} scanned: {sum(1 for v in new_cache.values() if v.get('channel_id') == channel_id)} files")
+                except Exception as e:
+                    logger.error(f"Failed to refresh channel {channel_id}: {e}")
 
             file_cache.clear()
             file_cache.update(new_cache)
             _last_refresh = datetime.utcnow()
-            pdfs  = sum(1 for f in file_cache.values() if f["type"] == "pdf")
-            epubs = sum(1 for f in file_cache.values() if f["type"] == "epub")
-            logger.info(f"Cache refreshed: {pdfs} PDFs, {epubs} EPUBs")
+            pdfs   = sum(1 for f in file_cache.values() if f["type"] == "pdf")
+            epubs  = sum(1 for f in file_cache.values() if f["type"] == "epub")
+            videos = sum(1 for f in file_cache.values() if f["type"] == "video")
+            logger.info(f"Cache refreshed: {pdfs} PDFs, {epubs} EPUBs, {videos} Videos across {len(channels)} channel(s)")
         except Exception as e:
             logger.error(f"Cache refresh failed: {e}")
         finally:
@@ -211,22 +233,34 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AirNotes 2.0", lifespan=lifespan)
+
+# ─── CORS — must use specific origins when allow_credentials=True ─────────────
+_cors_origins = (
+    [o.strip() for o in config.FRONTEND_URL.split(",") if o.strip()]
+    if config.FRONTEND_URL and config.FRONTEND_URL != "*"
+    else ["*"]
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
 )
 
 # ─── Health ───────────────────────────────────────────────────────────────────
 @app.get("/health")
 @app.head("/health")
 async def health():
-    pdfs  = sum(1 for f in file_cache.values() if f.get("type") == "pdf")
-    epubs = sum(1 for f in file_cache.values() if f.get("type") == "epub")
+    pdfs   = sum(1 for f in file_cache.values() if f.get("type") == "pdf")
+    epubs  = sum(1 for f in file_cache.values() if f.get("type") == "epub")
+    videos = sum(1 for f in file_cache.values() if f.get("type") == "video")
+    channels = config.STORAGE_CHANNELS or [config.STORAGE_CHANNEL]
     return {
-        "status": "ok", "files_cached": len(file_cache), "pdfs": pdfs, "epubs": epubs,
+        "status": "ok", "files_cached": len(file_cache),
+        "pdfs": pdfs, "epubs": epubs, "videos": videos,
+        "channels": len(channels),
         "last_refresh": _last_refresh.isoformat() if _last_refresh else None,
         "refresh_in_progress": _refresh_in_progress,
     }
@@ -247,7 +281,7 @@ async def verify(user=Depends(require_auth)):
 @app.get("/api/files")
 async def list_files(type: str = None, folder_id: str = None, user=Depends(require_auth)):
     files = list(file_cache.values())
-    if type in ("pdf", "epub"):
+    if type in ("pdf", "epub", "video"):
         files = [f for f in files if f.get("type") == type]
     elif type == "document":
         files = [f for f in files if f.get("type") in ("pdf", "epub")]
@@ -268,7 +302,9 @@ async def stream_file(file_id: str, request: Request, user=Depends(require_auth)
             asyncio.create_task(refresh_file_cache())
         raise HTTPException(status_code=404, detail="File not found — cache may be refreshing, please retry shortly")
     info = file_cache[file_id]
-    return await media_streamer(config.STORAGE_CHANNEL, info["message_id"], info["name"], request)
+    # Use the stored channel_id if present (multi-channel), else fall back to primary
+    channel_id = info.get("channel_id", config.STORAGE_CHANNEL)
+    return await media_streamer(channel_id, info["message_id"], info["name"], request)
 
 @app.delete("/api/files/{file_id}")
 async def delete_file(file_id: str, user=Depends(require_auth)):
@@ -277,7 +313,8 @@ async def delete_file(file_id: str, user=Depends(require_auth)):
     info = file_cache[file_id]
     try:
         client = get_client()
-        await client.delete_messages(config.STORAGE_CHANNEL, [info["message_id"]])
+        channel_id = info.get("channel_id", config.STORAGE_CHANNEL)
+        await client.delete_messages(channel_id, [info["message_id"]])
     except Exception as e:
         logger.warning(f"Could not delete Telegram message: {e}")
     del file_cache[file_id]
@@ -303,11 +340,13 @@ async def copy_file(file_id: str, user=Depends(require_auth)):
     info = file_cache[file_id]
     try:
         client = get_client()
-        copied = await client.copy_message(config.STORAGE_CHANNEL, config.STORAGE_CHANNEL, info["message_id"])
+        src_channel = info.get("channel_id", config.STORAGE_CHANNEL)
+        copied = await client.copy_message(config.STORAGE_CHANNEL, src_channel, info["message_id"])
         new_key = f"msg_{copied.id}"
         file_cache[new_key] = {
-            "id": new_key, "message_id": copied.id, "name": info["name"],
-            "size": info["size"], "date": datetime.utcnow().timestamp(),
+            "id": new_key, "message_id": copied.id, "channel_id": config.STORAGE_CHANNEL,
+            "name": info["name"], "size": info["size"],
+            "date": datetime.utcnow().timestamp(),
             "caption": info.get("caption", ""), "type": info["type"], "mime": info.get("mime", ""),
         }
         return {"success": True, "file": file_cache[new_key]}
@@ -336,7 +375,7 @@ async def search_files(q: str = "", type: str = None, user=Depends(require_auth)
         f for f in file_cache.values()
         if q in f["name"].lower() or q in f.get("caption", "").lower()
     ]
-    if type in ("pdf", "epub"):
+    if type in ("pdf", "epub", "video"):
         results = [f for f in results if f.get("type") == type]
     results.sort(key=lambda f: f["date"], reverse=True)
     return {"results": results, "total": len(results)}
