@@ -104,8 +104,18 @@ def _index_file(message, media, ftype: str, fname: str):
         "type": ftype, "mime": getattr(media, "mime_type", "") or "",
     }
     _file_cache[key] = entry
+
+    # ── Assign to the active folder so it appears in the folder on the website ──
+    if _current_folder and _folder_db is not None:
+        _folder_db.setdefault("file_assignments", {})[key] = _current_folder
+        if _save_fn:
+            try:
+                _save_fn()
+            except Exception as e:
+                logger.error(f"Failed to save folder assignment: {e}")
+
     notify_new_file(entry)
-    logger.info(f"Indexed {ftype.upper()}: {fname} (msg {message.id})")
+    logger.info(f"Indexed {ftype.upper()}: {fname} (msg {message.id}) → folder '{_current_folder_name}'")
     return entry
 
 # ─── Setup function (called from main.py lifespan) ───────────────────────────
@@ -432,6 +442,9 @@ async def _do_bulk_import(client, user_chat_id: int, channel_name: str, start_id
                 "mime": getattr(copied_media, "mime_type", mime) or mime,
             }
             _file_cache[key] = entry
+            # Assign to active folder so files appear in the folder on the website
+            if _current_folder and _folder_db is not None:
+                _folder_db.setdefault("file_assignments", {})[key] = _current_folder
             notify_new_file(entry)
             imported += 1
         except Exception as e:
@@ -461,3 +474,9 @@ async def _do_bulk_import(client, user_chat_id: int, channel_name: str, start_id
         f"❌ Errors: {errors}\n\n"
         f"Files are now live in your library!"
     )
+    # Persist folder assignments after bulk import
+    if _save_fn and imported > 0:
+        try:
+            _save_fn()
+        except Exception as e:
+            logger.error(f"Failed to save bulk import folder assignments: {e}")
