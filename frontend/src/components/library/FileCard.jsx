@@ -138,7 +138,7 @@ export default function FileCard({ file, progress, thumbnail, listMode = false, 
           ) : (
             <p className="text-sm text-ink-200 truncate leading-tight">{title}</p>
           )}
-          <p className="text-xs text-ink-500 mt-0.5">{formatSize(file.size)} · {formatRelativeDate(file.date)}</p>
+          <p className="text-xs text-ink-500 mt-0.5">{formatSize(file.size)} · {formatRelativeDate(file.date)}{file.uploaded_by?.display ? <span> · <span className="text-ink-400">👤 {file.uploaded_by.display}</span></span> : null}</p>
         </div>
 
         {/* Badge */}
@@ -257,6 +257,9 @@ export default function FileCard({ file, progress, thumbnail, listMode = false, 
           </span>
           <span className="text-[10px] text-ink-500">{formatSize(file.size)}</span>
         </div>
+        {file.uploaded_by?.display && (
+          <p className="text-[10px] text-ink-500 mt-1 truncate">👤 {file.uploaded_by.display}</p>
+        )}
       </div>
     </motion.div>
   );
