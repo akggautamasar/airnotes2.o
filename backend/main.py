@@ -368,6 +368,7 @@ async def copy_file(file_id: str, user=Depends(require_auth)):
             "name": info["name"], "size": info["size"],
             "date": datetime.utcnow().timestamp(),
             "caption": info.get("caption", ""), "type": info["type"], "mime": info.get("mime", ""),
+            "uploaded_by": info.get("uploaded_by", {}),
         }
         return {"success": True, "file": file_cache[new_key]}
     except Exception as e:
