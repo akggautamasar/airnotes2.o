@@ -28,14 +28,14 @@ FOLDER_CONFIG_FILE = Path("./cache/bot_folder_config.json")
 
 START_MSG = """✦ **AirNotes Bot**
 
-Send me a **PDF, EPUB, or Video** file and I'll add it to your library instantly.
+Send me a **PDF, EPUB, or Video** file and I'll add it to the shared library instantly.
+Your Telegram username will be shown on the website next to your upload.
 
 **Commands:**
-/set_folder — choose upload folder
-/current_folder — show active folder
-/create_folder — create a new folder
-/bulk_import — import range of files from a Telegram channel
+/current_folder — show active upload folder
 /help — show this message
+
+*Folder management is available to admins only.*
 """
 
 # ─── Manual ask helper ────────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ def _search_folders(query: str):
             if q in f["name"].lower()]
 
 # ─── File indexing ────────────────────────────────────────────────────────────
-def _index_file(message, media, ftype: str, fname: str):
+def _index_file(message, media, ftype: str, fname: str, uploader: dict = None):
     """Add a file to the in-memory cache and notify SSE clients."""
     from main import notify_new_file
     key = f"msg_{message.id}"
@@ -102,6 +102,7 @@ def _index_file(message, media, ftype: str, fname: str):
         "date": message.date.timestamp() if message.date else datetime.utcnow().timestamp(),
         "caption": message.caption or "",
         "type": ftype, "mime": getattr(media, "mime_type", "") or "",
+        "uploaded_by": uploader or {},
     }
     _file_cache[key] = entry
 
@@ -132,8 +133,6 @@ def setup_bot_handlers(client, file_cache: dict, folder_db: dict, save_fn):
     # ── /start  /help ─────────────────────────────────────────────────────────
     @client.on_message(filters.command(["start", "help"]) & filters.private)
     async def cmd_start(c, m):
-        if m.from_user.id not in admin_ids:
-            return
         await m.reply_text(START_MSG)
 
     # ── /current_folder ───────────────────────────────────────────────────────
@@ -313,14 +312,12 @@ def setup_bot_handlers(client, file_cache: dict, folder_db: dict, save_fn):
         & (filters.document | filters.video | filters.audio)
     )
     async def handle_file(c, m):
-        if m.from_user.id not in admin_ids:
-            return
-        # If waiting for a text reply, ignore file messages
+        # If waiting for a text reply (admin flow), ignore file messages
         if m.chat.id in _pending_asks:
             return
         if not _current_folder:
             await m.reply_text(
-                "❌ No folder set. Use /set_folder to choose one first.\n\n"
+                "❌ No folder set yet. An admin needs to /set_folder first.\n\n"
                 "Use /help for all commands."
             )
             return
@@ -342,6 +339,20 @@ def setup_bot_handlers(client, file_cache: dict, folder_db: dict, save_fn):
             )
             return
 
+        # Build uploader info from Telegram user
+        user = m.from_user
+        uploader = {
+            "id": user.id,
+            "username": user.username or "",
+            "first_name": user.first_name or "",
+            "last_name": user.last_name or "",
+            "display": (
+                f"@{user.username}" if user.username
+                else f"{(user.first_name or '')} {(user.last_name or '')}".strip()
+                or str(user.id)
+            ),
+        }
+
         processing_msg = await m.reply_text(f"⏳ Indexing **{fname}**…")
 
         try:
@@ -353,13 +364,14 @@ def setup_bot_handlers(client, file_cache: dict, folder_db: dict, save_fn):
                 await processing_msg.edit_text("❌ Failed to copy file to storage channel.")
                 return
 
-            entry = _index_file(copied, copied_media, ftype, fname)
+            entry = _index_file(copied, copied_media, ftype, fname, uploader=uploader)
             size_mb = entry["size"] / (1024 * 1024)
             await processing_msg.edit_text(
                 f"✅ **{ftype.upper()} added!**\n\n"
                 f"📄 **{fname}**\n"
                 f"📁 Folder: {_current_folder_name}\n"
-                f"💾 Size: {size_mb:.1f} MB"
+                f"💾 Size: {size_mb:.1f} MB\n"
+                f"👤 Uploaded by: {uploader['display']}"
             )
         except Exception as e:
             logger.error(f"File handler error: {e}")
@@ -368,6 +380,7 @@ def setup_bot_handlers(client, file_cache: dict, folder_db: dict, save_fn):
     # ── Generic text handler (fulfills pending _ask calls) ────────────────────
     @client.on_message(filters.private & filters.text)
     async def handle_text(c, m):
+        # Only admins can trigger pending asks (folder management flows)
         if m.from_user.id not in admin_ids:
             return
         chat_id = m.chat.id
