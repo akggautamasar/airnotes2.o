@@ -40,16 +40,36 @@ export default function VideoPlayer() {
   const [error,        setError]        = useState(null);
   const [speed,        setSpeed]        = useState(1);
   const [seekFlash,    setSeekFlash]    = useState(null);
+  const [useTranscode, setUseTranscode] = useState(false);
+  const [audioCodec,   setAudioCodec]   = useState(null);
 
-  const streamUrl = file ? api.getVideoStreamUrl(file.id) : null;
-  const title     = file ? cleanFileName(file.name) : '';
+  const normalUrl    = file ? api.getVideoStreamUrl(file.id) : null;
+  const transcodeUrl = file ? api.getTranscodeStreamUrl(file.id) : null;
+  const streamUrl    = useTranscode ? transcodeUrl : normalUrl;
+  const title        = file ? cleanFileName(file.name) : '';
 
   // Normalise MIME for browser: x-matroska / x-msvideo etc. all become video/mp4
-  // so the browser doesn't silently drop audio tracks it "doesn't recognise"
   const rawMime   = (file?.mime || '').toLowerCase();
   const videoType = rawMime === 'video/webm' ? 'video/webm'
                   : rawMime === 'video/mp2t' ? 'video/mp2t'
+                  : useTranscode ? 'video/mp4'
                   : 'video/mp4';
+
+  // Probe audio codec when file opens — switch to transcode if browser can't decode it
+  useEffect(() => {
+    if (!file) return;
+    setUseTranscode(false);
+    setAudioCodec(null);
+    const BROWSER_SAFE = new Set(['aac','mp3','opus','vorbis','flac','pcm_s16le','pcm_u8']);
+    api.getAudioInfo(file.id)
+      .then(({ codec, needs_transcode }) => {
+        setAudioCodec(codec);
+        if (needs_transcode) {
+          setUseTranscode(true);
+        }
+      })
+      .catch(() => {}); // silently fall back to direct stream on probe failure
+  }, [file?.id]);
 
   // ── controls auto-hide ───────────────────────────────────────────────
   const resetHide = useCallback(() => {
@@ -198,7 +218,14 @@ export default function VideoPlayer() {
         </button>
         <div className="flex-1 min-w-0">
           <p className="text-white font-medium text-sm truncate">{title}</p>
-          <p className="text-white/40 text-xs">{formatSize(file.size)}</p>
+          <p className="text-white/40 text-xs flex items-center gap-2">
+            {formatSize(file.size)}
+            {useTranscode && (
+              <span className="text-yellow-400/80 text-[10px] font-medium">
+                ⚡ audio re-encoded ({audioCodec} → AAC)
+              </span>
+            )}
+          </p>
         </div>
         <a href={streamUrl} download={file.name}
            className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10">
