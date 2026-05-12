@@ -387,7 +387,7 @@ async def stream_file(file_id: str, request: Request, transcode: bool = False, u
     from utils.clients import get_client
     from utils.streamer.custom_dl import ByteStreamer
     from utils.streamer import class_cache
-    import asyncio
+    import asyncio, tempfile, os
 
     client = get_client()
     if client not in class_cache:
@@ -400,36 +400,58 @@ async def stream_file(file_id: str, request: Request, transcode: bool = False, u
         raise HTTPException(status_code=500, detail=str(e))
 
     async def transcode_stream():
+        # Use a named FIFO so ffmpeg can "seek" in it (MKV needs seekable input)
+        fifo_path = f"/tmp/tg_fifo_{info['message_id']}_{id(asyncio.current_task())}"
+        try:
+            os.mkfifo(fifo_path)
+        except FileExistsError:
+            os.unlink(fifo_path)
+            os.mkfifo(fifo_path)
+
         proc = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-i", "pipe:0",           # read from stdin
-            "-c:v", "copy",           # copy video — no re-encode, fast
-            "-c:a", "aac",            # transcode audio to AAC (browser-safe)
+            "ffmpeg", "-y",
+            "-fflags", "+genpts+discardcorrupt",
+            "-analyzeduration", "10M",   # give ffmpeg time to find audio stream in MKV
+            "-probesize", "10M",
+            "-i", fifo_path,
+            "-map", "0:v:0",             # first video track
+            "-map", "0:a:0",             # first audio track
+            "-c:v", "copy",              # copy video — no re-encode
+            "-c:a", "aac",               # transcode audio to AAC
             "-b:a", "192k",
-            "-movflags", "frag_keyframe+empty_moov+faststart",  # streamable MP4
+            "-ac", "2",                  # stereo (handles 5.1 downmix)
+            "-movflags", "frag_keyframe+empty_moov+default_base_moof",
             "-f", "mp4",
-            "pipe:1",                 # write to stdout
-            stdin=asyncio.subprocess.PIPE,
+            "pipe:1",
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
 
-        async def feed_stdin():
+        async def feed_fifo():
+            """Write Telegram chunks into the FIFO in a thread to avoid blocking."""
             try:
+                # Open FIFO for writing in a thread (blocks until ffmpeg opens read end)
+                loop = asyncio.get_event_loop()
+                fd = await loop.run_in_executor(None, lambda: os.open(fifo_path, os.O_WRONLY))
                 async for chunk in client.stream_media(file_id_obj.file_id, offset=0, limit=99999):
                     if not chunk:
                         break
-                    proc.stdin.write(chunk)
-                    await proc.stdin.drain()
+                    # Write in executor to avoid blocking the event loop
+                    await loop.run_in_executor(None, lambda c=chunk: os.write(fd, c))
             except Exception as e:
-                logger.error(f"Transcode stdin feeder error: {e}")
+                logger.error(f"FIFO feeder error: {e}")
             finally:
                 try:
-                    proc.stdin.close()
+                    os.close(fd)
+                except Exception:
+                    pass
+                try:
+                    os.unlink(fifo_path)
                 except Exception:
                     pass
 
-        feed_task = asyncio.create_task(feed_stdin())
+        feed_task = asyncio.create_task(feed_fifo())
 
         try:
             while True:
@@ -439,10 +461,17 @@ async def stream_file(file_id: str, request: Request, transcode: bool = False, u
                 yield chunk
         except (GeneratorExit, asyncio.CancelledError):
             pass
+        except Exception as e:
+            logger.error(f"Transcode read error: {e}")
         finally:
             feed_task.cancel()
             try:
                 proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            try:
+                os.unlink(fifo_path)
             except Exception:
                 pass
 
