@@ -337,16 +337,16 @@ async def audio_info(file_id: str, user=Depends(require_auth)):
         streamer = class_cache[client]
         file_id_obj = await streamer.get_file_properties(channel_id, info["message_id"])
 
-        # Collect first ~2 MB for ffprobe — enough to read container headers
+        # Collect first ~128 KB for ffprobe — codec info is in container headers, no need for 2MB
         chunks = []
         collected = 0
-        probe_limit = 2 * 1024 * 1024
-        async for chunk in client.stream_media(file_id_obj.file_id, offset=0, limit=2):
+        probe_limit = 128 * 1024
+        async for chunk in client.stream_media(file_id_obj.file_id, offset=0, limit=1):
             chunks.append(chunk)
             collected += len(chunk)
             if collected >= probe_limit:
                 break
-        sample = b"".join(chunks)
+        sample = b"".join(chunks)[:probe_limit]
 
         proc = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "quiet", "-print_format", "json",
