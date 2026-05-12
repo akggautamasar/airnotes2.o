@@ -44,6 +44,13 @@ export default function VideoPlayer() {
   const streamUrl = file ? api.getVideoStreamUrl(file.id) : null;
   const title     = file ? cleanFileName(file.name) : '';
 
+  // Normalise MIME for browser: x-matroska / x-msvideo etc. all become video/mp4
+  // so the browser doesn't silently drop audio tracks it "doesn't recognise"
+  const rawMime   = (file?.mime || '').toLowerCase();
+  const videoType = rawMime === 'video/webm' ? 'video/webm'
+                  : rawMime === 'video/mp2t' ? 'video/mp2t'
+                  : 'video/mp4';
+
   // ── controls auto-hide ───────────────────────────────────────────────
   const resetHide = useCallback(() => {
     setShowCtrl(true);
@@ -217,10 +224,10 @@ export default function VideoPlayer() {
         {!error && (
           <video
             ref={videoRef}
-            src={streamUrl}
             className="max-w-full max-h-full z-0"
             preload="auto"
             playsInline
+            crossOrigin="anonymous"
             onLoadedMetadata={onMeta}
             onCanPlay={onCanPlay}
             onPlaying={onPlaying}
@@ -230,7 +237,9 @@ export default function VideoPlayer() {
             onTimeUpdate={onTimeUpdate}
             onProgress={onProgress}
             onError={onError}
-          />
+          >
+            <source src={streamUrl} type={videoType} />
+          </video>
         )}
 
         {/* spinner — only while truly buffering */}
