@@ -66,9 +66,22 @@ export default function VideoPlayer() {
         setAudioCodec(codec);
         if (needs_transcode) {
           setUseTranscode(true);
+          // Probe came back AFTER video already started — force reload with transcode URL
+          const v = videoRef.current;
+          if (v) {
+            const t = v.currentTime;
+            v.load();
+            v.currentTime = t;
+            v.play().catch(() => {});
+          }
         }
       })
-      .catch(() => { setUseTranscode(true); }); // probe failed — default to transcode path for audio safety
+      .catch(() => {
+        // Probe failed — default to transcode and reload
+        setUseTranscode(true);
+        const v = videoRef.current;
+        if (v) { v.load(); v.play().catch(() => {}); }
+      });
   }, [file?.id]);
 
   // ── controls auto-hide ───────────────────────────────────────────────
