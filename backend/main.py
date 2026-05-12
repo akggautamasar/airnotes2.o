@@ -170,6 +170,8 @@ async def refresh_channel(client, channel_id: int, new_cache: Dict):
                 "name": fname, "size": getattr(media, "file_size", 0),
                 "date": message.date.timestamp() if message.date else 0,
                 "caption": message.caption or "", "type": ftype, "mime": mime,
+                # Restore persisted metadata (e.g. uploaded_by) that isn't in the Telegram message
+                **folder_db.get("file_meta", {}).get(key, {}),
             }
         await asyncio.sleep(0.1)
 
@@ -339,6 +341,7 @@ async def delete_file(file_id: str, user=Depends(require_auth)):
         logger.warning(f"Could not delete Telegram message: {e}")
     del file_cache[file_id]
     folder_db["file_assignments"].pop(file_id, None)
+    folder_db.setdefault("file_meta", {}).pop(file_id, None)
     _save_folders()
     return {"success": True}
 
