@@ -146,8 +146,8 @@ async def refresh_channel(client, channel_id: int, new_cache: Dict):
         try:
             messages = await client.get_messages(channel_id, ids)
         except Exception as e:
-            logger.warning(f"Batch fetch failed for channel {channel_id}: {e}")
-            continue
+            logger.warning(f"Batch fetch failed for channel {channel_id} at {batch_start}: {e} — stopping scan early to preserve existing files")
+            break
 
         for message in messages:
             if not message or message.empty:
@@ -186,6 +186,7 @@ async def refresh_file_cache():
             new_cache: Dict[str, Dict] = {}
 
             channels = config.STORAGE_CHANNELS if config.STORAGE_CHANNELS else [config.STORAGE_CHANNEL]
+            failed_channels = set()
             for channel_id in channels:
                 if not channel_id:
                     continue
@@ -194,6 +195,28 @@ async def refresh_file_cache():
                     logger.info(f"Channel {channel_id} scanned: {sum(1 for v in new_cache.values() if v.get('channel_id') == channel_id)} files")
                 except Exception as e:
                     logger.error(f"Failed to refresh channel {channel_id}: {e}")
+                    failed_channels.add(channel_id)
+
+            # Safety check: never replace cache with a suspiciously smaller result.
+            # If new_cache has fewer than 70% of existing entries, it likely means
+            # Telegram FloodWait cut the scan short — keep old entries for missing files.
+            prev_count = len(file_cache)
+            new_count  = len(new_cache)
+            if prev_count > 0 and new_count < prev_count * 0.7:
+                logger.warning(
+                    f"Refresh returned only {new_count}/{prev_count} files — "
+                    f"merging instead of replacing to avoid data loss (FloodWait likely)"
+                )
+                # Keep all old entries, then overlay with whatever we did get freshly
+                merged = dict(file_cache)
+                merged.update(new_cache)
+                new_cache = merged
+            else:
+                # For channels that failed entirely, preserve their old entries
+                for key, val in file_cache.items():
+                    ch = val.get("channel_id", config.STORAGE_CHANNEL)
+                    if ch in failed_channels and key not in new_cache:
+                        new_cache[key] = val
 
             file_cache.clear()
             file_cache.update(new_cache)
