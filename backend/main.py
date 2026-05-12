@@ -329,7 +329,8 @@ async def list_files(type: str = None, folder_id: str = None, user=Depends(requi
 
 @app.get("/api/files/{file_id}/qualities")
 async def get_qualities(file_id: str, user=Depends(require_auth)):
-    """Return available quality variants for a video file."""    if file_id not in file_cache:
+    """Return available quality variants for a video file."""
+    if file_id not in file_cache:
         raise HTTPException(status_code=404, detail="File not found")
     variants = encoder.get_quality_variants(file_id)
     # Build response: {label: {file_id, size, ready: True}}
