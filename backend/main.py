@@ -368,7 +368,7 @@ async def audio_info(file_id: str, user=Depends(require_auth)):
         return {"codec": codec, "needs_transcode": needs_transcode, "streams": len(streams)}
     except Exception as e:
         logger.warning(f"audio-info probe failed for {file_id}: {e}")
-        return {"codec": "unknown", "needs_transcode": False, "error": str(e)}
+        return {"codec": "unknown", "needs_transcode": True, "error": str(e)}
 
 
 @app.get("/api/files/{file_id}/stream")
@@ -482,6 +482,7 @@ async def stream_file(file_id: str, request: Request, transcode: bool = False, u
             "Content-Type": "video/mp4",
             "Cache-Control": "no-store",
             "X-Accel-Buffering": "no",
+            "Accept-Ranges": "none",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
         },
