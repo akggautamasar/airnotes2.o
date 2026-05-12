@@ -127,14 +127,6 @@ def _index_file(message, media, ftype: str, fname: str, uploader: dict = None):
     notify_new_file(entry)
     logger.info(f"Indexed {ftype.upper()}: {fname} (msg {message.id}) → folder '{_current_folder_name}'")
 
-    # Trigger background quality encoding for videos
-    if ftype == "video":
-        try:
-            import encoder
-            encoder.schedule_encoding(key)
-        except Exception as e:
-            logger.warning(f"Could not schedule encoding for {key}: {e}")
-
     return entry
 
 # ─── Setup function (called from main.py lifespan) ───────────────────────────
@@ -262,7 +254,78 @@ def setup_bot_handlers(client, file_cache: dict, folder_db: dict, save_fn):
         _set_folder(fid, name)
         await m.reply_text(f"✅ Folder **{name}** created and set as current folder.")
 
+    # ── /encode ───────────────────────────────────────────────────────────────
+    @client.on_message(filters.command("encode") & filters.private)
+    async def cmd_encode(c, m):
+        if m.from_user.id not in admin_ids:
+            return
+
+        args = m.command[1:]
+
+        if not args:
+            await m.reply_text(
+                "\U0001f4cb **Encode Usage:**\n"
+                "`/encode msg_4641` \u2014 encode all qualities (480p, 360p, 720p)\n"
+                "`/encode msg_4641 480p` \u2014 specific quality\n"
+                "`/encode msg_4641 480p 720p` \u2014 multiple qualities\n\n"
+                "\U0001f4a1 Find the file ID on the website (visible in the player URL or title)."
+            )
+            return
+
+        file_id = args[0].strip()
+
+        if file_id not in _file_cache:
+            await m.reply_text("File `" + file_id + "` not found in cache.")
+            return
+
+        info = _file_cache[file_id]
+        if info.get("type") != "video":
+            await m.reply_text("`" + file_id + "` is not a video file.")
+            return
+        if info.get("is_encoded_variant"):
+            await m.reply_text("That file is already an encoded variant.")
+            return
+
+        import encoder as enc
+        from encoder import QUALITY_LABELS
+
+        requested = [a.lower() for a in args[1:]]
+        if requested:
+            invalid = [q for q in requested if q not in QUALITY_LABELS]
+            if invalid:
+                await m.reply_text(
+                    "Unknown qualities: " + ", ".join(invalid) + "\n"
+                    "Valid: " + ", ".join(QUALITY_LABELS)
+                )
+                return
+            qualities = requested
+        else:
+            qualities = list(QUALITY_LABELS)
+
+        already_done = enc.get_quality_variants(file_id)
+        pending = [q for q in qualities if q not in already_done]
+
+        if not pending:
+            await m.reply_text(
+                "\u2705 All requested qualities already encoded!\n"
+                + info['name'] + "\n"
+                "Done: " + ", ".join(already_done.keys())
+            )
+            return
+
+        enc.schedule_encoding(file_id, pending, notify_chat_id=m.chat.id)
+        done_str = ("Already done: " + ", ".join(already_done.keys()) + "\n") if already_done else ""
+        await m.reply_text(
+            "\u23f3 **Queued for encoding!**\n"
+            + info['name'] + "\n\n"
+            "Qualities: " + ", ".join(pending) + "\n"
+            + done_str
+            + "\nYou'll get updates as each quality finishes.\n"
+            "\u23f1 ~20\u201340 min per quality."
+        )
+
     # ── /bulk_import ──────────────────────────────────────────────────────────
+        # ── /bulk_import ──────────────────────────────────────────────────────────
     @client.on_message(filters.command("bulk_import") & filters.private)
     async def cmd_bulk_import(c, m):
         if m.from_user.id not in admin_ids:

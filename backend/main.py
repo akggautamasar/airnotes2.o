@@ -226,19 +226,7 @@ async def refresh_file_cache():
             epubs  = sum(1 for f in file_cache.values() if f["type"] == "epub")
             videos = sum(1 for f in file_cache.values() if f["type"] == "video")
             logger.info(f"Cache refreshed: {pdfs} PDFs, {epubs} EPUBs, {videos} Videos across {len(channels)} channel(s)")
-            # Schedule encoding only for videos NOT already in encode_db
-            # (avoids re-queuing all 100+ videos on every refresh)
-            already_tracked = set(encoder._encode_db.get("done", {}).keys())
-            new_videos = [
-                key for key, f in file_cache.items()
-                if f.get("type") == "video"
-                and not f.get("is_encoded_variant")
-                and key not in already_tracked
-            ]
-            for key in new_videos:
-                encoder.schedule_encoding(key)
-            if new_videos:
-                logger.info(f"Encoder: scheduled {len(new_videos)} new videos for encoding")
+            # Auto-encoding is disabled — use /encode <file_id> bot command to encode on demand
         except Exception as e:
             logger.error(f"Cache refresh failed: {e}")
         finally:
@@ -453,11 +441,7 @@ async def stream_file(file_id: str, request: Request, transcode: bool = False, s
     channel_id = info.get("channel_id", config.STORAGE_CHANNEL)
 
     if not transcode:
-        encoder.stream_started()
-        try:
-            return await media_streamer(channel_id, info["message_id"], info["name"], request)
-        finally:
-            encoder.stream_ended()
+        return await media_streamer(channel_id, info["message_id"], info["name"], request)
 
     # ── Transcode path: pipe Telegram stream through ffmpeg, re-encode audio to AAC ──
     from utils.clients import get_client
