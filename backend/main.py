@@ -318,15 +318,146 @@ async def stream_file_head(file_id: str, request: Request, user=Depends(require_
         }
     )
 
+@app.get("/api/files/{file_id}/audio-info")
+async def audio_info(file_id: str, user=Depends(require_auth)):
+    """Probe audio codec via ffprobe so the frontend knows whether to request transcoded stream."""
+    if file_id not in file_cache:
+        raise HTTPException(status_code=404, detail="File not found")
+    info = file_cache[file_id]
+    channel_id = info.get("channel_id", config.STORAGE_CHANNEL)
+    try:
+        import asyncio, json as _json
+        from utils.clients import get_client
+        from utils.streamer.custom_dl import ByteStreamer
+        from utils.streamer import class_cache
+
+        client = get_client()
+        if client not in class_cache:
+            class_cache[client] = ByteStreamer(client)
+        streamer = class_cache[client]
+        file_id_obj = await streamer.get_file_properties(channel_id, info["message_id"])
+
+        # Collect first ~2 MB for ffprobe — enough to read container headers
+        chunks = []
+        collected = 0
+        probe_limit = 2 * 1024 * 1024
+        async for chunk in client.stream_media(file_id_obj.file_id, offset=0, limit=2):
+            chunks.append(chunk)
+            collected += len(chunk)
+            if collected >= probe_limit:
+                break
+        sample = b"".join(chunks)
+
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_streams", "-select_streams", "a",
+            "-i", "pipe:0",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(input=sample), timeout=15)
+        probe = _json.loads(stdout or b"{}")
+        streams = probe.get("streams", [])
+        codec = streams[0].get("codec_name", "unknown") if streams else "unknown"
+
+        # Audio codecs browsers support natively
+        BROWSER_SAFE = {"aac", "mp3", "opus", "vorbis", "flac", "pcm_s16le", "pcm_u8"}
+        needs_transcode = codec.lower() not in BROWSER_SAFE
+
+        return {"codec": codec, "needs_transcode": needs_transcode, "streams": len(streams)}
+    except Exception as e:
+        logger.warning(f"audio-info probe failed for {file_id}: {e}")
+        return {"codec": "unknown", "needs_transcode": False, "error": str(e)}
+
+
 @app.get("/api/files/{file_id}/stream")
-async def stream_file(file_id: str, request: Request, user=Depends(require_auth)):
+async def stream_file(file_id: str, request: Request, transcode: bool = False, user=Depends(require_auth)):
     if file_id not in file_cache:
         if not _refresh_in_progress:
             asyncio.create_task(refresh_file_cache())
         raise HTTPException(status_code=404, detail="File not found — cache may be refreshing, please retry shortly")
     info = file_cache[file_id]
     channel_id = info.get("channel_id", config.STORAGE_CHANNEL)
-    return await media_streamer(channel_id, info["message_id"], info["name"], request)
+
+    if not transcode:
+        return await media_streamer(channel_id, info["message_id"], info["name"], request)
+
+    # ── Transcode path: pipe Telegram stream through ffmpeg, re-encode audio to AAC ──
+    from utils.clients import get_client
+    from utils.streamer.custom_dl import ByteStreamer
+    from utils.streamer import class_cache
+    import asyncio
+
+    client = get_client()
+    if client not in class_cache:
+        class_cache[client] = ByteStreamer(client)
+    streamer = class_cache[client]
+
+    try:
+        file_id_obj = await streamer.get_file_properties(channel_id, info["message_id"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    async def transcode_stream():
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-i", "pipe:0",           # read from stdin
+            "-c:v", "copy",           # copy video — no re-encode, fast
+            "-c:a", "aac",            # transcode audio to AAC (browser-safe)
+            "-b:a", "192k",
+            "-movflags", "frag_keyframe+empty_moov+faststart",  # streamable MP4
+            "-f", "mp4",
+            "pipe:1",                 # write to stdout
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+
+        async def feed_stdin():
+            try:
+                async for chunk in client.stream_media(file_id_obj.file_id, offset=0, limit=99999):
+                    if not chunk:
+                        break
+                    proc.stdin.write(chunk)
+                    await proc.stdin.drain()
+            except Exception as e:
+                logger.error(f"Transcode stdin feeder error: {e}")
+            finally:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+
+        feed_task = asyncio.create_task(feed_stdin())
+
+        try:
+            while True:
+                chunk = await proc.stdout.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        except (GeneratorExit, asyncio.CancelledError):
+            pass
+        finally:
+            feed_task.cancel()
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        transcode_stream(),
+        media_type="video/mp4",
+        headers={
+            "Content-Type": "video/mp4",
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
+        },
+        status_code=200,
+    )
 
 @app.delete("/api/files/{file_id}")
 async def delete_file(file_id: str, user=Depends(require_auth)):
