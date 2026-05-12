@@ -42,9 +42,11 @@ export default function VideoPlayer() {
   const [seekFlash,    setSeekFlash]    = useState(null);
   const [useTranscode, setUseTranscode] = useState(false);
   const [audioCodec,   setAudioCodec]   = useState(null);
+  const [audioTracks,  setAudioTracks]  = useState([]);
+  const [audioTrack,   setAudioTrack]   = useState(0);
 
   const normalUrl    = file ? api.getVideoStreamUrl(file.id) : null;
-  const transcodeUrl = file ? api.getTranscodeStreamUrl(file.id) : null;
+  const transcodeUrl = file ? api.getTranscodeStreamUrl(file.id, 0, audioTrack) : null;
   const streamUrl    = useTranscode ? transcodeUrl : normalUrl;
   const title        = file ? cleanFileName(file.name) : '';
 
@@ -60,10 +62,13 @@ export default function VideoPlayer() {
     if (!file) return;
     setUseTranscode(false);
     setAudioCodec(null);
+    setAudioTracks([]);
+    setAudioTrack(0);
     const BROWSER_SAFE = new Set(['aac','mp3','opus','vorbis','flac','pcm_s16le','pcm_u8']);
     api.getAudioInfo(file.id)
-      .then(({ codec, needs_transcode }) => {
+      .then(({ codec, needs_transcode, audio_tracks }) => {
         setAudioCodec(codec);
+        if (audio_tracks && audio_tracks.length > 1) setAudioTracks(audio_tracks);
         if (needs_transcode) {
           setUseTranscode(true);
           // Probe came back AFTER video already started — force reload with transcode URL
@@ -122,7 +127,9 @@ export default function VideoPlayer() {
   const skip = (secs) => {
     const v = videoRef.current;
     if (!v) return;
-    v.currentTime = Math.max(0, Math.min(duration, v.currentTime + secs));
+    const targetTime = Math.max(0, Math.min(duration, currentTime + secs));
+    if (useTranscode) { seekTranscode(targetTime); }
+    else { v.currentTime = targetTime; }
     resetHide();
   };
 
@@ -130,7 +137,9 @@ export default function VideoPlayer() {
     const v = videoRef.current;
     if (!v || !duration) return;
     const r = e.currentTarget.getBoundingClientRect();
-    v.currentTime = ((e.clientX - r.left) / r.width) * duration;
+    const targetTime = ((e.clientX - r.left) / r.width) * duration;
+    if (useTranscode) { seekTranscode(targetTime); }
+    else { v.currentTime = targetTime; }
     resetHide();
   };
 
@@ -152,6 +161,30 @@ export default function VideoPlayer() {
   const setSpd = (s) => {
     setSpeed(s);
     if (videoRef.current) videoRef.current.playbackRate = s;
+  };
+
+  // For transcode stream: seeking reloads with start_time param since it is not range-seekable
+  const seekTranscode = (targetTime) => {
+    const v = videoRef.current;
+    if (!v) return;
+    const url = api.getTranscodeStreamUrl(file.id, targetTime, audioTrack);
+    v.src = url;
+    v.load();
+    v.currentTime = 0; // ffmpeg starts from targetTime, so local time resets to 0
+    v.play().catch(() => {});
+    setCurrentTime(targetTime);
+  };
+
+  const switchAudioTrack = (idx) => {
+    const v = videoRef.current;
+    const t = v ? currentTime : 0;
+    setAudioTrack(idx);
+    if (useTranscode) {
+      const url = api.getTranscodeStreamUrl(file.id, t, idx);
+      v.src = url;
+      v.load();
+      v.play().catch(() => {});
+    }
   };
 
   const toggleFS = () => {
@@ -381,6 +414,23 @@ export default function VideoPlayer() {
           >
             {SPEEDS.map(s => <option key={s} value={s} className="bg-black">{s}x</option>)}
           </select>
+
+          {/* audio track switcher — only shown when multiple tracks detected */}
+          {audioTracks.length > 1 && (
+            <select
+              value={audioTrack}
+              onChange={e => switchAudioTrack(parseInt(e.target.value))}
+              className="bg-transparent text-white/70 text-xs font-bold
+                         border border-white/30 rounded px-1.5 py-0.5 cursor-pointer"
+              title="Switch audio track"
+            >
+              {audioTracks.map(t => (
+                <option key={t.index} value={t.index} className="bg-black">
+                  🎵 {t.label}
+                </option>
+              ))}
+            </select>
+          )}
 
           {/* volume */}
           <button onClick={toggleMute} className="text-white/70 hover:text-white">
