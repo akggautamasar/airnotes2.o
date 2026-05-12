@@ -65,6 +65,7 @@ export const api = {
     const t = getToken();
     return `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream${t ? '?token=' + encodeURIComponent(t) : ''}`;
   },
-  getAudioInfo: (fileId) => request(`/files/${encodeURIComponent(fileId)}/audio-info`),
+  getAudioInfo:    (fileId) => request(`/files/${encodeURIComponent(fileId)}/audio-info`),
+  getQualities:    (fileId) => request(`/files/${encodeURIComponent(fileId)}/qualities`),
   authHeaders: () => ({ Authorization: `Bearer ${getToken()}` }),
 };
