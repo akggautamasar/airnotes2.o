@@ -51,10 +51,17 @@ export const api = {
     const t = getToken();
     return `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream${t ? '?token=' + encodeURIComponent(t) : ''}`;
   },
+  getTranscodeStreamUrl: (fileId) => {
+    const t = getToken();
+    const sep = t ? '&' : '?';
+    const base = `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream${t ? '?token=' + encodeURIComponent(t) : ''}`;
+    return base + sep + 'transcode=1';
+  },
   // PDF / EPUB use Bearer header directly — keep for backwards compat
   getStreamUrlWithToken: (fileId) => {
     const t = getToken();
     return `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream${t ? '?token=' + encodeURIComponent(t) : ''}`;
   },
+  getAudioInfo: (fileId) => request(`/files/${encodeURIComponent(fileId)}/audio-info`),
   authHeaders: () => ({ Authorization: `Bearer ${getToken()}` }),
 };
