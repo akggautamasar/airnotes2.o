@@ -365,14 +365,23 @@ async def audio_info(file_id: str, user=Depends(require_auth)):
         BROWSER_SAFE = {"aac", "mp3", "opus", "vorbis", "flac", "pcm_s16le", "pcm_u8"}
         needs_transcode = codec.lower() not in BROWSER_SAFE
 
-        return {"codec": codec, "needs_transcode": needs_transcode, "streams": len(streams)}
+        # Build per-track info for the frontend audio switcher
+        audio_tracks = []
+        for i, s in enumerate(streams):
+            tags = s.get("tags", {})
+            lang  = tags.get("language") or tags.get("LANGUAGE") or ""
+            title = tags.get("title")    or tags.get("TITLE")    or ""
+            label = title or (lang.upper() if lang and lang != "und" else f"Track {i+1}")
+            audio_tracks.append({"index": i, "codec": s.get("codec_name",""), "label": label, "lang": lang})
+
+        return {"codec": codec, "needs_transcode": needs_transcode, "streams": len(streams), "audio_tracks": audio_tracks}
     except Exception as e:
         logger.warning(f"audio-info probe failed for {file_id}: {e}")
         return {"codec": "unknown", "needs_transcode": True, "error": str(e)}
 
 
 @app.get("/api/files/{file_id}/stream")
-async def stream_file(file_id: str, request: Request, transcode: bool = False, user=Depends(require_auth)):
+async def stream_file(file_id: str, request: Request, transcode: bool = False, start_time: float = 0.0, audio_track: int = 0, user=Depends(require_auth)):
     if file_id not in file_cache:
         if not _refresh_in_progress:
             asyncio.create_task(refresh_file_cache())
@@ -408,14 +417,16 @@ async def stream_file(file_id: str, request: Request, transcode: bool = False, u
             os.unlink(fifo_path)
             os.mkfifo(fifo_path)
 
+        seek_args = ["-ss", str(start_time)] if start_time > 0 else []
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y",
             "-fflags", "+genpts+discardcorrupt",
             "-analyzeduration", "10M",   # give ffmpeg time to find audio stream in MKV
             "-probesize", "10M",
             "-i", fifo_path,
+            *seek_args,                      # seek AFTER input so ffmpeg decodes to the right point
             "-map", "0:v:0",             # first video track
-            "-map", "0:a:0",             # first audio track
+            "-map", f"0:a:{audio_track}", # selected audio track
             "-c:v", "copy",              # copy video — no re-encode
             "-c:a", "aac",               # transcode audio to AAC
             "-b:a", "192k",
