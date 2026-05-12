@@ -18,6 +18,7 @@ from utils.clients import initialize_clients, get_client
 from utils.streamer import media_streamer
 from utils.extra import auto_ping_website
 from utils.logger import Logger
+import encoder
 
 logger = Logger(__name__)
 file_cache: Dict[str, Dict] = {}
@@ -225,6 +226,10 @@ async def refresh_file_cache():
             epubs  = sum(1 for f in file_cache.values() if f["type"] == "epub")
             videos = sum(1 for f in file_cache.values() if f["type"] == "video")
             logger.info(f"Cache refreshed: {pdfs} PDFs, {epubs} EPUBs, {videos} Videos across {len(channels)} channel(s)")
+            # Schedule encoding for every video that doesn't have all quality variants yet
+            for key, f in file_cache.items():
+                if f.get("type") == "video" and not f.get("is_encoded_variant"):
+                    encoder.schedule_encoding(key)
         except Exception as e:
             logger.error(f"Cache refresh failed: {e}")
         finally:
@@ -241,6 +246,8 @@ async def _periodic_refresh():
 async def lifespan(app: FastAPI):
     _load_folders()
     await initialize_clients()
+    encoder.init_encoder(file_cache, folder_db, _save_folders)
+    asyncio.create_task(encoder.encoder_worker())
     asyncio.create_task(refresh_file_cache())
     asyncio.create_task(_periodic_refresh())
     try:
@@ -319,6 +326,29 @@ async def list_files(type: str = None, folder_id: str = None, user=Depends(requi
         "last_refresh": _last_refresh.isoformat() if _last_refresh else None,
         "refresh_in_progress": _refresh_in_progress,
     }
+
+@app.get("/api/files/{file_id}/qualities")
+async def get_qualities(file_id: str, user=Depends(require_auth)):
+    """Return available quality variants for a video file."""    if file_id not in file_cache:
+        raise HTTPException(status_code=404, detail="File not found")
+    variants = encoder.get_quality_variants(file_id)
+    # Build response: {label: {file_id, size, ready: True}}
+    result = {"original": {"file_id": file_id, "label": "Original", "size": file_cache[file_id].get("size", 0), "ready": True}}
+    for label, enc_file_id in variants.items():
+        enc_info = file_cache.get(enc_file_id, {})
+        result[label] = {
+            "file_id": enc_file_id,
+            "label":   label,
+            "size":    enc_info.get("size", 0),
+            "ready":   bool(enc_info),
+        }
+    # Also add pending qualities (not yet encoded)
+    from encoder import QUALITY_PRESETS
+    for q_label, *_ in QUALITY_PRESETS:
+        if q_label not in result:
+            result[q_label] = {"file_id": None, "label": q_label, "size": 0, "ready": False}
+    return result
+
 
 @app.head("/api/files/{file_id}/stream")
 async def stream_file_head(file_id: str, request: Request, user=Depends(require_auth)):

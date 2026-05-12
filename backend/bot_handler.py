@@ -126,6 +126,15 @@ def _index_file(message, media, ftype: str, fname: str, uploader: dict = None):
 
     notify_new_file(entry)
     logger.info(f"Indexed {ftype.upper()}: {fname} (msg {message.id}) → folder '{_current_folder_name}'")
+
+    # Trigger background quality encoding for videos
+    if ftype == "video":
+        try:
+            import encoder
+            encoder.schedule_encoding(key)
+        except Exception as e:
+            logger.warning(f"Could not schedule encoding for {key}: {e}")
+
     return entry
 
 # ─── Setup function (called from main.py lifespan) ───────────────────────────
