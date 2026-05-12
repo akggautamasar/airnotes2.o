@@ -145,14 +145,14 @@ async def _encode_quality(file_id: str, info: dict, label: str, height: int, crf
     msg_id  = info.get("message_id")
     chan_id = info.get("channel_id", config.STORAGE_CHANNEL)
 
-    # ── Fetch the message to get the media object ─────────────────────────────
-    msg = await client.get_messages(chan_id, msg_id)
-    if not msg or msg.empty:
-        logger.error(f"Encoder: could not fetch message {msg_id}")
-        return None
-    media = msg.document or msg.video
-    if not media:
-        logger.error(f"Encoder: message {msg_id} has no document/video")
+    # ── Get file properties via ByteStreamer (same path as normal streaming) ────
+    from utils.streamer.custom_dl import ByteStreamer
+    from utils.clients import get_client as _get_client
+    streamer = ByteStreamer(client)
+    try:
+        file_props = await streamer.get_file_properties(chan_id, msg_id)
+    except Exception as e:
+        logger.error(f"Encoder: could not get file properties for {msg_id}: {e}")
         return None
 
     # ── Temp output file ──────────────────────────────────────────────────────
@@ -187,7 +187,8 @@ async def _encode_quality(file_id: str, info: dict, label: str, height: int, crf
         # ── Stream Telegram → ffmpeg stdin concurrently ───────────────────────
         async def feed_stdin():
             try:
-                async for chunk in client.iter_download(media):
+                # stream_media yields the entire file in chunks
+                async for chunk in client.stream_media(file_props.file_id, offset=0):
                     if proc.stdin.is_closing():
                         break
                     proc.stdin.write(chunk)

@@ -450,7 +450,7 @@ async def stream_file(file_id: str, request: Request, transcode: bool = False, s
     from utils.clients import get_client
     from utils.streamer.custom_dl import ByteStreamer
     from utils.streamer import class_cache
-    import asyncio, tempfile, os
+    import tempfile, os
 
     client = get_client()
     if client not in class_cache:
