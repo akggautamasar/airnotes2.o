@@ -68,7 +68,7 @@ export default function VideoPlayer() {
           setUseTranscode(true);
         }
       })
-      .catch(() => {}); // silently fall back to direct stream on probe failure
+      .catch(() => { setUseTranscode(true); }); // probe failed — default to transcode path for audio safety
   }, [file?.id]);
 
   // ── controls auto-hide ───────────────────────────────────────────────
