@@ -115,6 +115,15 @@ def _index_file(message, media, ftype: str, fname: str, uploader: dict = None):
             except Exception as e:
                 logger.error(f"Failed to save folder assignment: {e}")
 
+    # ── Persist uploader info so it survives cache refreshes ──────────────────
+    if uploader and _folder_db is not None:
+        _folder_db.setdefault("file_meta", {})[key] = {"uploaded_by": uploader}
+        if _save_fn:
+            try:
+                _save_fn()
+            except Exception as e:
+                logger.error(f"Failed to save file meta: {e}")
+
     notify_new_file(entry)
     logger.info(f"Indexed {ftype.upper()}: {fname} (msg {message.id}) → folder '{_current_folder_name}'")
     return entry
