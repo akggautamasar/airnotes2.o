@@ -19,11 +19,15 @@ logger    = Logger(__name__)
 class_cache = {}
 
 VIDEO_MIME_TYPES = {
-    '.mp4': 'video/mp4',    '.mkv': 'video/x-matroska',
-    '.webm':'video/webm',   '.avi': 'video/x-msvideo',
-    '.mov': 'video/quicktime', '.m4v': 'video/mp4',
-    '.flv': 'video/x-flv', '.wmv': 'video/x-ms-wmv',
-    '.3gp': 'video/3gpp',  '.ts':  'video/mp2t',
+    '.mp4': 'video/mp4',    '.m4v': 'video/mp4',
+    '.mkv': 'video/mp4',    # Serve MKV as mp4 — browsers reject x-matroska audio tracks
+    '.webm':'video/webm',
+    '.avi': 'video/mp4',    # AVI re-served as mp4 container hint for browser compat
+    '.mov': 'video/mp4',    # QuickTime → mp4 for browser compat
+    '.flv': 'video/mp4',
+    '.wmv': 'video/mp4',
+    '.3gp': 'video/mp4',
+    '.ts':  'video/mp2t',
     '.mpeg':'video/mpeg',
 }
 AUDIO_MIME_TYPES = {
