@@ -130,7 +130,6 @@ async def media_streamer(channel: int, message_id: int, file_name: str, request)
 
     headers = {
         "Content-Type":        mime_type,
-        "Content-Length":      str(req_length),
         "Accept-Ranges":       "bytes",
         "Content-Disposition": f'{disposition}; filename="{quote(file_name)}"',
         "Access-Control-Allow-Origin":   "*",
@@ -139,10 +138,11 @@ async def media_streamer(channel: int, message_id: int, file_name: str, request)
         "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
         "Cache-Control":       "public, max-age=86400",
         "ETag":                etag,
-        "X-Accel-Buffering":   "no",   # tells nginx NOT to buffer — bytes flow straight to client
+        "X-Accel-Buffering":   "no",
     }
     if is_range:
-        headers["Content-Range"] = f"bytes {from_bytes}-{until_bytes}/{file_size}"
+        headers["Content-Range"]   = f"bytes {from_bytes}-{until_bytes}/{file_size}"
+        headers["Content-Length"]  = str(req_length)   # only set for range requests (seek/seek works correctly)
 
     return StreamingResponse(
         status_code=206 if is_range else 200,
