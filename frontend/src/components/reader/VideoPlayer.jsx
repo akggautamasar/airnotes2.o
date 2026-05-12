@@ -83,9 +83,12 @@ export default function VideoPlayer() {
   const [audioTrack,    setAudioTrack]   = useState(0);
   const [resumePrompt,  setResumePrompt] = useState(null);  // { time } to show resume banner
   const [scrubTime,     setScrubTime]    = useState(null);  // preview time while dragging seek bar
+  const [qualities,     setQualities]    = useState({});    // {label: {file_id, ready, size}}
+  const [activeQuality, setActiveQuality] = useState('original'); // currently selected quality
 
-  const normalUrl    = file ? api.getVideoStreamUrl(file.id) : null;
-  const transcodeUrl = file ? api.getTranscodeStreamUrl(file.id, 0, audioTrack) : null;
+  const activeFileId = (activeQuality !== 'original' && qualities[activeQuality]?.file_id) ? qualities[activeQuality].file_id : (file?.id ?? null);
+  const normalUrl    = activeFileId ? api.getVideoStreamUrl(activeFileId) : null;
+  const transcodeUrl = activeFileId ? api.getTranscodeStreamUrl(activeFileId, 0, audioTrack) : null;
   const streamUrl    = useTranscode ? transcodeUrl : normalUrl;
   const title        = file ? cleanFileName(file.name) : '';
 
@@ -108,6 +111,13 @@ export default function VideoPlayer() {
     // Check saved resume position
     const saved = getResumeTime(file.id);
     if (saved > RESUME_THRESHOLD) setResumePrompt({ time: saved });
+
+    // Fetch quality variants
+    setQualities({});
+    setActiveQuality('original');
+    api.getQualities(file.id)
+      .then(q => setQualities(q))
+      .catch(() => {});  // non-critical, quality selector just won't show
 
     const BROWSER_SAFE = new Set(['aac','mp3','opus','vorbis','flac','pcm_s16le','pcm_u8']);
     api.getAudioInfo(file.id)
@@ -265,6 +275,21 @@ export default function VideoPlayer() {
     if (useTranscode) {
       const url = api.getTranscodeStreamUrl(file.id, t, idx);
       v.src = url; v.load(); v.play().catch(() => {});
+    }
+  };
+
+  const switchQuality = (label) => {
+    const v = videoRef.current;
+    const t = v ? currentTime : 0;
+    setActiveQuality(label);
+    // If encoded variant is ready, it's already an MP4 — no transcode needed
+    if (label !== 'original' && qualities[label]?.file_id) {
+      setUseTranscode(false); // encoded variants are already AAC/MP4
+    }
+    if (v) {
+      v.pause();
+      // Let useEffect re-derive streamUrl from new activeFileId, then reload
+      setTimeout(() => { v.load(); v.currentTime = t; v.play().catch(() => {}); }, 50);
     }
   };
 
@@ -540,6 +565,28 @@ export default function VideoPlayer() {
 
           {/* Right cluster: speed + audio + volume + fullscreen */}
           <div className="flex items-center gap-1">
+
+            {/* Quality selector — shown when any variant is available or encoding */}
+            {Object.keys(qualities).length > 1 && (
+              <select
+                value={activeQuality}
+                onChange={e => switchQuality(e.target.value)}
+                className="bg-black/60 text-white text-xs font-bold border border-white/20
+                           rounded-lg px-2 py-1.5 cursor-pointer appearance-none"
+                title="Video quality"
+              >
+                {Object.entries(qualities)
+                  .sort((a, b) => {
+                    const order = ['original','720p','480p','360p'];
+                    return order.indexOf(a[0]) - order.indexOf(b[0]);
+                  })
+                  .map(([label, info]) => (
+                    <option key={label} value={label} disabled={!info.ready} className="bg-black">
+                      {label === 'original' ? '🎬 Original' : info.ready ? `📱 ${label}` : `⏳ ${label}`}
+                    </option>
+                  ))}
+              </select>
+            )}
 
             {/* Speed */}
             <select
