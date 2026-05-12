@@ -51,11 +51,14 @@ export const api = {
     const t = getToken();
     return `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream${t ? '?token=' + encodeURIComponent(t) : ''}`;
   },
-  getTranscodeStreamUrl: (fileId) => {
+  getTranscodeStreamUrl: (fileId, startTime = 0, audioTrack = 0) => {
     const t = getToken();
-    const sep = t ? '&' : '?';
-    const base = `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream${t ? '?token=' + encodeURIComponent(t) : ''}`;
-    return base + sep + 'transcode=1';
+    const base = `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream`;
+    const params = new URLSearchParams({ transcode: '1' });
+    if (t) params.set('token', t);
+    if (startTime > 0) params.set('start_time', startTime.toFixed(3));
+    if (audioTrack > 0) params.set('audio_track', audioTrack);
+    return base + '?' + params.toString();
   },
   // PDF / EPUB use Bearer header directly — keep for backwards compat
   getStreamUrlWithToken: (fileId) => {
