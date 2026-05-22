@@ -35,6 +35,10 @@ Your Telegram username will be shown on the website next to your upload.
 /current_folder — show active upload folder
 /help — show this message
 
+**In groups/channels:**
+/setup_channel — register this channel on the website
+/channel_info — show indexing stats for this channel
+
 *Folder management is available to admins only.*
 """
 
@@ -470,6 +474,9 @@ def setup_bot_handlers(client, file_cache: dict, folder_db: dict, save_fn):
             await queue.put(m.text)
             event.set()
 
+    # Register channel-level commands
+    _register_channel_commands(client, admin_ids, file_cache, folder_db, save_fn)
+
 
 # ─── Bulk import worker ───────────────────────────────────────────────────────
 def _parse_tg_link(link: str):
@@ -574,3 +581,84 @@ async def _do_bulk_import(client, user_chat_id: int, channel_name: str, start_id
             _save_fn()
         except Exception as e:
             logger.error(f"Failed to save bulk import folder assignments: {e}")
+
+
+# ─── Channel setup (appended) ─────────────────────────────────────────────────
+# This block is appended separately so it can be hot-patched without touching
+# the original file structure.  Import setup_bot_handlers from this same file.
+
+def _register_channel_commands(client, admin_ids, file_cache, folder_db, save_fn):
+    """Register /setup_channel and channel file-handling commands."""
+    import httpx
+    import config as cfg
+    from pyrogram import filters as _f
+
+    @client.on_message(_f.command("setup_channel") & (_f.group | _f.channel))
+    async def cmd_setup_channel(c, m):
+        """Register this channel to the AirNotes website. Admin-only."""
+        chat = m.chat
+        # Must be an admin of the chat
+        try:
+            member = await c.get_chat_member(chat.id, m.from_user.id)
+            status = getattr(member, "status", None)
+            if status not in ("administrator", "creator"):
+                await m.reply_text("⚠️ Only channel/group admins can run /setup_channel.")
+                return
+        except Exception:
+            pass
+
+        channel_name = getattr(chat, "title", None) or getattr(chat, "username", None) or str(chat.id)
+        username = getattr(chat, "username", None) or ""
+
+        # Call the website API to register
+        base_url = getattr(cfg, "WEBSITE_URL", None) or getattr(cfg, "FRONTEND_URL", None)
+        # Prefer the backend URL (WEBSITE_URL is the backend API URL in env)
+        api_url = getattr(cfg, "WEBSITE_URL", None)
+        if not api_url:
+            await m.reply_text(
+                f"✅ Channel **{channel_name}** (`{chat.id}`) noted.\n\n"
+                "⚠️ `WEBSITE_URL` env var is not set — cannot auto-register to website.\n"
+                "Add it to `.env` so the bot can call `/api/channels/register`."
+            )
+            return
+
+        try:
+            token_payload = {"sub": "bot", "role": "admin"}
+            import jwt as pyjwt
+            token = pyjwt.encode({**token_payload, "exp": __import__("datetime").datetime.utcnow() + __import__("datetime").timedelta(hours=1)}, cfg.JWT_SECRET, algorithm="HS256")
+            async with httpx.AsyncClient(timeout=10) as http:
+                resp = await http.post(
+                    f"{api_url.rstrip('/')}/api/channels/register",
+                    json={"channel_id": chat.id, "name": channel_name, "username": username},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            if resp.status_code == 200:
+                await m.reply_text(
+                    f"🎉 **Channel registered!**\n\n"
+                    f"📺 **{channel_name}**\n"
+                    f"🆔 `{chat.id}`\n\n"
+                    f"All PDF, EPUB & Video files I can access here will now appear on the website "
+                    f"under a **'{channel_name}'** channel folder.\n\n"
+                    f"A background rescan has been triggered — files will appear shortly."
+                )
+            else:
+                await m.reply_text(f"❌ Registration failed: {resp.text}")
+        except Exception as e:
+            await m.reply_text(f"❌ Could not register channel: {e}")
+
+    @client.on_message(_f.command("channel_info") & (_f.group | _f.channel))
+    async def cmd_channel_info(c, m):
+        """Show info about this channel and how many files are indexed."""
+        chat = m.chat
+        channel_id = chat.id
+        count = sum(1 for f in file_cache.values() if f.get("channel_id") == channel_id)
+        name = getattr(chat, "title", None) or str(channel_id)
+        await m.reply_text(
+            f"📊 **Channel Info**\n\n"
+            f"📺 **{name}**\n"
+            f"🆔 `{channel_id}`\n"
+            f"📄 Indexed files: **{count}**\n\n"
+            f"Use /setup_channel to register this channel on the website."
+        )
+
+    logger.info("Channel commands registered (/setup_channel, /channel_info)")

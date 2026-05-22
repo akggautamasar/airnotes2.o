@@ -29,7 +29,7 @@ DATA_DIR = Path("./cache")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 FOLDERS_FILE = DATA_DIR / "folders.json"
 
-folder_db: Dict = {"folders": {}, "file_assignments": {}}
+folder_db: Dict = {"folders": {}, "file_assignments": {}, "channel_registry": {}}
 
 def _save_folders():
     with open(FOLDERS_FILE, "w") as f:
@@ -41,6 +41,8 @@ def _load_folders():
         try:
             with open(FOLDERS_FILE) as f:
                 folder_db = json.load(f)
+            # Ensure channel_registry key exists for old installs
+            folder_db.setdefault("channel_registry", {})
         except Exception as e:
             logger.warning(f"Could not load folders: {e}")
 
@@ -118,6 +120,29 @@ async def refresh_channel(client, channel_id: int, new_cache: Dict):
     anchor_id = config.DATABASE_BACKUP_MSG_ID
     upper_id  = anchor_id
 
+    # Resolve channel name from registry or Telegram
+    channel_name = None
+    registry = folder_db.get("channel_registry", {})
+    str_id = str(channel_id)
+    if str_id in registry:
+        channel_name = registry[str_id].get("name")
+    if not channel_name:
+        try:
+            chat = await client.get_chat(channel_id)
+            channel_name = getattr(chat, "title", None) or getattr(chat, "username", None) or str(channel_id)
+            if str_id not in registry:
+                registry[str_id] = {
+                    "id": channel_id,
+                    "name": channel_name,
+                    "username": getattr(chat, "username", None) or "",
+                    "registered_at": datetime.utcnow().isoformat(),
+                    "auto_detected": True,
+                }
+                folder_db["channel_registry"] = registry
+                _save_folders()
+        except Exception:
+            channel_name = str(channel_id)
+
     # Find the highest existing message ID for this channel in file_cache
     channel_prefix = f"ch{channel_id}_msg_"
     legacy_prefix  = "msg_"  # backwards compat for single-channel setups
@@ -168,6 +193,7 @@ async def refresh_channel(client, channel_id: int, new_cache: Dict):
                 key = f"ch{channel_id}_msg_{message.id}"
             new_cache[key] = {
                 "id": key, "message_id": message.id, "channel_id": channel_id,
+                "channel_name": channel_name,
                 "name": fname, "size": getattr(media, "file_size", 0),
                 "date": message.date.timestamp() if message.date else 0,
                 "caption": message.caption or "", "type": ftype, "mime": mime,
@@ -748,3 +774,86 @@ async def sse_events(request: Request, token: str = None):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
+
+
+# ─── Channel Registry ─────────────────────────────────────────────────────────
+
+@app.get("/api/channels")
+async def list_channels(user=Depends(require_auth)):
+    """List all registered channels with file counts."""
+    registry = folder_db.get("channel_registry", {})
+    channels = []
+    for str_id, ch in registry.items():
+        ch_id = ch.get("id") or int(str_id)
+        file_count = sum(1 for f in file_cache.values() if f.get("channel_id") == ch_id)
+        channels.append({
+            **ch,
+            "id": ch_id,
+            "str_id": str_id,
+            "file_count": file_count,
+        })
+    channels.sort(key=lambda c: c.get("registered_at", ""), reverse=True)
+    return {"channels": channels}
+
+
+@app.post("/api/channels/register")
+async def register_channel(request: Request, user=Depends(require_auth)):
+    """Register a new channel. Called by the bot on /setup_channel."""
+    body = await request.json()
+    channel_id = body.get("channel_id")
+    channel_name = body.get("name", "").strip()
+    username = body.get("username", "").strip()
+    if not channel_id or not channel_name:
+        raise HTTPException(status_code=400, detail="channel_id and name required")
+    str_id = str(channel_id)
+    registry = folder_db.setdefault("channel_registry", {})
+    existing = registry.get(str_id)
+    registry[str_id] = {
+        "id": int(channel_id),
+        "name": channel_name,
+        "username": username,
+        "registered_at": existing.get("registered_at", datetime.utcnow().isoformat()) if existing else datetime.utcnow().isoformat(),
+        "setup_at": datetime.utcnow().isoformat(),
+        "auto_detected": False,
+    }
+    _save_folders()
+    # Trigger a background refresh so new channel files appear
+    asyncio.create_task(refresh_file_cache())
+    return {"success": True, "channel": registry[str_id]}
+
+
+@app.delete("/api/channels/{channel_str_id}")
+async def unregister_channel(channel_str_id: str, user=Depends(require_auth)):
+    """Remove a channel from the registry."""
+    registry = folder_db.get("channel_registry", {})
+    if channel_str_id not in registry:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    del registry[channel_str_id]
+    _save_folders()
+    return {"success": True}
+
+
+@app.get("/api/channels/{channel_str_id}/files")
+async def get_channel_files(channel_str_id: str, type: str = None, user=Depends(require_auth)):
+    """Get all files from a specific channel."""
+    registry = folder_db.get("channel_registry", {})
+    if channel_str_id not in registry:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    ch_id = registry[channel_str_id].get("id") or int(channel_str_id)
+    files = [f for f in file_cache.values() if f.get("channel_id") == ch_id]
+    if type in ("pdf", "epub", "video"):
+        files = [f for f in files if f.get("type") == type]
+    files.sort(key=lambda f: f["date"], reverse=True)
+    return {"files": files, "channel": registry[channel_str_id], "total": len(files)}
+
+
+@app.get("/api/channels-all-files")
+async def get_all_channels_files(type: str = None, user=Depends(require_auth)):
+    """Get all files from all registered channels combined."""
+    registry = folder_db.get("channel_registry", {})
+    registered_ids = {v.get("id") or int(k) for k, v in registry.items()}
+    files = [f for f in file_cache.values() if f.get("channel_id") in registered_ids]
+    if type in ("pdf", "epub", "video"):
+        files = [f for f in files if f.get("type") == type]
+    files.sort(key=lambda f: f["date"], reverse=True)
+    return {"files": files, "total": len(files), "channel_count": len(registered_ids)}
