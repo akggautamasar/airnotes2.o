@@ -31,19 +31,100 @@ FOLDERS_FILE = DATA_DIR / "folders.json"
 
 folder_db: Dict = {"folders": {}, "file_assignments": {}, "channel_registry": {}}
 
+# ─── Save to disk ─────────────────────────────────────────────────────────────
 def _save_folders():
     with open(FOLDERS_FILE, "w") as f:
         json.dump(folder_db, f, indent=2)
 
+# ─── Backup folders.json to Telegram (survives redeploys) ────────────────────
+_backup_pending = False
+
+async def _backup_to_telegram():
+    """Upload folders.json to the pinned backup message in STORAGE_CHANNEL."""
+    global _backup_pending
+    if _backup_pending:
+        return
+    _backup_pending = True
+    try:
+        await asyncio.sleep(5)  # debounce — batch rapid saves
+        client = get_client()
+        caption = (
+            f"📦 **AirNotes folders.json backup**\n"
+            f"Updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
+            "Do not delete this message — it is used to restore data on redeploy."
+        )
+        try:
+            from pyrogram.types import InputMediaDocument
+            await client.edit_message_media(
+                config.STORAGE_CHANNEL,
+                config.DATABASE_BACKUP_MSG_ID,
+                media=InputMediaDocument(
+                    str(FOLDERS_FILE),
+                    caption=caption,
+                    file_name="folders.json",
+                ),
+            )
+            logger.info("folders.json backed up to Telegram.")
+        except Exception as e:
+            # If edit fails (message has no document yet), send a new message
+            logger.warning(f"edit_message_media failed: {e} — trying send_document")
+            try:
+                await client.send_document(
+                    config.STORAGE_CHANNEL,
+                    str(FOLDERS_FILE),
+                    caption=caption,
+                    file_name="folders.json",
+                )
+                logger.info("folders.json sent as new document to Telegram.")
+            except Exception as e2:
+                logger.error(f"Telegram backup failed completely: {e2}")
+    finally:
+        _backup_pending = False
+
+def _save_and_backup():
+    """Save to disk then schedule Telegram backup."""
+    _save_folders()
+    asyncio.create_task(_backup_to_telegram())
+
+# ─── Restore folders.json from Telegram on startup ───────────────────────────
+async def _restore_from_telegram():
+    """Download folders.json from pinned Telegram backup message."""
+    global folder_db
+    try:
+        client = get_client()
+        msg = await client.get_messages(config.STORAGE_CHANNEL, config.DATABASE_BACKUP_MSG_ID)
+        if msg and msg.document and msg.document.file_name == "folders.json":
+            dl_path = await msg.download(file_name=str(FOLDERS_FILE))
+            logger.info(f"folders.json restored from Telegram backup: {dl_path}")
+            with open(FOLDERS_FILE) as f:
+                folder_db = json.load(f)
+            folder_db.setdefault("channel_registry", {})
+            folder_db.setdefault("folders", {})
+            folder_db.setdefault("file_assignments", {})
+            logger.info(
+                f"Restored: {len(folder_db.get('folders', {}))} folders, "
+                f"{len(folder_db.get('channel_registry', {}))} channels"
+            )
+            return True
+        else:
+            logger.info("No folders.json backup found in Telegram — starting fresh.")
+            return False
+    except Exception as e:
+        logger.warning(f"Could not restore from Telegram: {e}")
+        return False
+
 def _load_folders():
+    """Load from local disk (fallback if Telegram restore hasn't run yet)."""
     global folder_db
     if FOLDERS_FILE.exists():
         try:
             with open(FOLDERS_FILE) as f:
                 folder_db = json.load(f)
             folder_db.setdefault("channel_registry", {})
+            folder_db.setdefault("folders", {})
+            folder_db.setdefault("file_assignments", {})
         except Exception as e:
-            logger.warning(f"Could not load folders: {e}")
+            logger.warning(f"Could not load folders from disk: {e}")
 
 # ─── SSE broadcast ────────────────────────────────────────────────────────────
 _sse_queues: list = []
@@ -138,7 +219,7 @@ async def refresh_channel(client, channel_id: int, new_cache: Dict):
                     "auto_detected": True,
                 }
                 folder_db["channel_registry"] = registry
-                _save_folders()
+                _save_and_backup()
         except Exception:
             channel_name = str(channel_id)
 
@@ -171,7 +252,7 @@ async def refresh_channel(client, channel_id: int, new_cache: Dict):
         try:
             messages = await client.get_messages(channel_id, ids)
         except Exception as e:
-            logger.warning(f"Batch fetch failed for channel {channel_id} at {batch_start}: {e} — stopping scan early to preserve existing files")
+            logger.warning(f"Batch fetch failed for channel {channel_id} at {batch_start}: {e} — stopping scan early")
             break
 
         for message in messages:
@@ -209,7 +290,7 @@ async def refresh_file_cache():
             client = get_client()
             new_cache: Dict[str, Dict] = {}
 
-            # Scan config channels + any dynamically registered channels
+            # Scan config channels + dynamically registered channels
             config_channels = set(config.STORAGE_CHANNELS if config.STORAGE_CHANNELS else [config.STORAGE_CHANNEL])
             registry_channels = {v.get("id") or int(k) for k, v in folder_db.get("channel_registry", {}).items()}
             channels = list(config_channels | registry_channels)
@@ -230,7 +311,7 @@ async def refresh_file_cache():
             if prev_count > 0 and new_count < prev_count * 0.7:
                 logger.warning(
                     f"Refresh returned only {new_count}/{prev_count} files — "
-                    f"merging instead of replacing to avoid data loss (FloodWait likely)"
+                    f"merging to avoid data loss (FloodWait likely)"
                 )
                 merged = dict(file_cache)
                 merged.update(new_cache)
@@ -262,9 +343,16 @@ async def _periodic_refresh():
 # ─── App lifecycle ────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 1. Load from disk first (fast, works if disk has it)
     _load_folders()
+    # 2. Init Telegram clients
     await initialize_clients()
-    encoder.init_encoder(file_cache, folder_db, _save_folders)
+    # 3. Restore from Telegram (overwrites disk data with latest backup)
+    restored = await _restore_from_telegram()
+    if not restored:
+        logger.info("Using local folders.json (or fresh start)")
+
+    encoder.init_encoder(file_cache, folder_db, _save_and_backup)
     asyncio.create_task(encoder.encoder_worker())
     asyncio.create_task(refresh_file_cache())
     asyncio.create_task(_periodic_refresh())
@@ -272,7 +360,7 @@ async def lifespan(app: FastAPI):
         from bot_handler import setup_bot_handlers
         from utils.clients import multi_clients
         for client in multi_clients.values():
-            setup_bot_handlers(client, file_cache, folder_db, _save_folders)
+            setup_bot_handlers(client, file_cache, folder_db, _save_and_backup)
             logger.info("Bot handlers registered")
             break
     except Exception as e:
@@ -313,6 +401,7 @@ async def health():
         "status": "ok", "files_cached": len(file_cache),
         "pdfs": pdfs, "epubs": epubs, "videos": videos,
         "channels": len(all_channels),
+        "registered_channels": len(folder_db.get("channel_registry", {})),
         "last_refresh": _last_refresh.isoformat() if _last_refresh else None,
         "refresh_in_progress": _refresh_in_progress,
     }
@@ -512,14 +601,10 @@ async def stream_file(file_id: str, request: Request, transcode: bool = False, s
             except Exception as e:
                 logger.error(f"FIFO feeder error: {e}")
             finally:
-                try:
-                    os.close(fd)
-                except Exception:
-                    pass
-                try:
-                    os.unlink(fifo_path)
-                except Exception:
-                    pass
+                try: os.close(fd)
+                except Exception: pass
+                try: os.unlink(fifo_path)
+                except Exception: pass
 
         feed_task = asyncio.create_task(feed_fifo())
 
@@ -538,12 +623,9 @@ async def stream_file(file_id: str, request: Request, transcode: bool = False, s
             try:
                 proc.kill()
                 await proc.wait()
-            except Exception:
-                pass
-            try:
-                os.unlink(fifo_path)
-            except Exception:
-                pass
+            except Exception: pass
+            try: os.unlink(fifo_path)
+            except Exception: pass
 
     return StreamingResponse(
         transcode_stream(),
@@ -573,7 +655,7 @@ async def delete_file(file_id: str, user=Depends(require_auth)):
     del file_cache[file_id]
     folder_db["file_assignments"].pop(file_id, None)
     folder_db.setdefault("file_meta", {}).pop(file_id, None)
-    _save_folders()
+    _save_and_backup()
     return {"success": True}
 
 @app.patch("/api/files/{file_id}/rename")
@@ -620,7 +702,7 @@ async def move_file(file_id: str, request: Request, user=Depends(require_auth)):
         if folder_id not in folder_db["folders"]:
             raise HTTPException(status_code=404, detail="Folder not found")
         folder_db["file_assignments"][file_id] = folder_id
-    _save_folders()
+    _save_and_backup()
     return {"success": True, "file_id": file_id, "folder_id": folder_id}
 
 @app.get("/api/search")
@@ -663,7 +745,7 @@ async def create_folder_api(request: Request, user=Depends(require_auth)):
         "created_at": datetime.utcnow().isoformat(),
     }
     folder_db["folders"][folder_id] = folder
-    _save_folders()
+    _save_and_backup()
     return {"success": True, "folder": folder}
 
 @app.patch("/api/folders/{folder_id}")
@@ -678,7 +760,7 @@ async def update_folder_api(folder_id: str, request: Request, user=Depends(requi
         folder["locked"] = bool(body["locked"])
     if "password_hash" in body:
         folder["password_hash"] = body["password_hash"]
-    _save_folders()
+    _save_and_backup()
     return {"success": True, "folder": folder}
 
 @app.post("/api/folders/{folder_id}/verify-password")
@@ -704,7 +786,7 @@ async def delete_folder(folder_id: str, user=Depends(require_auth)):
         if assignments[fid] == folder_id:
             del assignments[fid]
     del folder_db["folders"][folder_id]
-    _save_folders()
+    _save_and_backup()
     return {"success": True}
 
 @app.get("/api/folders/{folder_id}/files")
@@ -794,7 +876,7 @@ async def register_channel(request: Request, user=Depends(require_auth)):
         "setup_at": datetime.utcnow().isoformat(),
         "auto_detected": False,
     }
-    _save_folders()
+    _save_and_backup()
     asyncio.create_task(refresh_file_cache())
     return {"success": True, "channel": registry[str_id]}
 
@@ -804,7 +886,7 @@ async def unregister_channel(channel_str_id: str, user=Depends(require_auth)):
     if channel_str_id not in registry:
         raise HTTPException(status_code=404, detail="Channel not found")
     del registry[channel_str_id]
-    _save_folders()
+    _save_and_backup()
     return {"success": True}
 
 @app.get("/api/channels/{channel_str_id}/files")
