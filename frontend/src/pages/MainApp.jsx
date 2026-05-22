@@ -29,10 +29,11 @@ export default function MainApp() {
   async function loadAll() {
     actions.setFilesLoading(true);
     try {
-      const [filesRes, foldersRes, assignmentsRes] = await Promise.all([
+      const [filesRes, foldersRes, assignmentsRes, channelsRes] = await Promise.all([
         api.getFiles(),
         api.getFolders(),
         api.getFileAssignments(),
+        api.getChannels(),
       ]);
       actions.setFiles(filesRes.files || []);
       lastCountRef.current = (filesRes.files || []).length;
@@ -44,6 +45,7 @@ export default function MainApp() {
       }));
       actions.setFolders(folders);
       actions.setFileAssignments(assignmentsRes.assignments || {});
+      actions.setChannels(channelsRes.channels || []);
     } catch (e) {
       actions.setFilesError(e.message);
     }
