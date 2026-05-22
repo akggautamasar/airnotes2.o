@@ -19,6 +19,8 @@ const initialState = {
   recentFiles: [],
   progress: {},
   unlockedFolders: [],
+  channels: [],
+  activeChannelId: null,
 };
 
 function reducer(state, action) {
@@ -57,6 +59,10 @@ function reducer(state, action) {
     }
     case 'SAVE_PROGRESS': return { ...state, progress: { ...state.progress, [action.fileId]: action.data } };
     case 'UNLOCK_FOLDER': return { ...state, unlockedFolders: [...state.unlockedFolders.filter(id => id !== action.id), action.id] };
+    case 'SET_CHANNELS': return { ...state, channels: action.payload };
+    case 'ADD_CHANNEL': return { ...state, channels: [...state.channels.filter(c => c.str_id !== action.payload.str_id), action.payload] };
+    case 'REMOVE_CHANNEL': return { ...state, channels: state.channels.filter(c => c.str_id !== action.payload) };
+    case 'SET_ACTIVE_CHANNEL': return { ...state, activeChannelId: action.payload, activeSection: 'channel', activeFolderId: null };
     default: return state;
   }
 }
@@ -88,6 +94,10 @@ export function AppProvider({ children }) {
     addRecent:          useCallback((r) => dispatch({ type: 'ADD_RECENT', payload: r }), []),
     saveProgress:       useCallback((fileId, data) => dispatch({ type: 'SAVE_PROGRESS', fileId, data }), []),
     unlockFolder:       useCallback((id) => dispatch({ type: 'UNLOCK_FOLDER', id }), []),
+    setChannels:        useCallback((c) => dispatch({ type: 'SET_CHANNELS', payload: c }), []),
+    addChannel:         useCallback((c) => dispatch({ type: 'ADD_CHANNEL', payload: c }), []),
+    removeChannel:      useCallback((id) => dispatch({ type: 'REMOVE_CHANNEL', payload: id }), []),
+    setActiveChannel:   useCallback((id) => dispatch({ type: 'SET_ACTIVE_CHANNEL', payload: id }), []),
   };
 
   return <Ctx.Provider value={{ state, actions }}>{children}</Ctx.Provider>;
