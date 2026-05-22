@@ -29,10 +29,19 @@ DATA_DIR = Path("./cache")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 FOLDERS_FILE = DATA_DIR / "folders.json"
 
-folder_db: Dict = {"folders": {}, "file_assignments": {}, "channel_registry": {}}
+# folder_db holds folders, assignments, channel_registry AND file_cache_data
+# This means everything survives redeploys via Telegram backup
+folder_db: Dict = {
+    "folders": {},
+    "file_assignments": {},
+    "channel_registry": {},
+    "file_cache_data": {},   # ← persisted file index (like drive.data)
+}
 
 # ─── Save to disk ─────────────────────────────────────────────────────────────
 def _save_folders():
+    # Also persist current file_cache into folder_db before saving
+    folder_db["file_cache_data"] = dict(file_cache)
     with open(FOLDERS_FILE, "w") as f:
         json.dump(folder_db, f, indent=2)
 
@@ -40,22 +49,22 @@ def _save_folders():
 _backup_pending = False
 
 async def _backup_to_telegram():
-    """Upload folders.json to the pinned backup message in STORAGE_CHANNEL."""
     global _backup_pending
     if _backup_pending:
         return
     _backup_pending = True
     try:
-        await asyncio.sleep(5)  # debounce — batch rapid saves
+        await asyncio.sleep(5)  # debounce
+        _save_folders()  # ensure file_cache_data is up to date
         client = get_client()
         caption = (
-            f"📦 **AirNotes folders.json backup**\n"
-            f"Updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
-            "Do not delete this message — it is used to restore data on redeploy."
+            f"📦 AirNotes backup\n"
+            f"Updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+            "Do not delete — used to restore data on redeploy."
         )
+        backup_msg_id = getattr(config, "FOLDERS_BACKUP_MSG_ID", None) or config.DATABASE_BACKUP_MSG_ID
         try:
             from pyrogram.types import InputMediaDocument
-            backup_msg_id = getattr(config, "FOLDERS_BACKUP_MSG_ID", None) or config.DATABASE_BACKUP_MSG_ID
             await client.edit_message_media(
                 config.STORAGE_CHANNEL,
                 backup_msg_id,
@@ -67,7 +76,6 @@ async def _backup_to_telegram():
             )
             logger.info("folders.json backed up to Telegram.")
         except Exception as e:
-            # If edit fails (message has no document yet), send a new message
             logger.warning(f"edit_message_media failed: {e} — trying send_document")
             try:
                 await client.send_document(
@@ -76,20 +84,17 @@ async def _backup_to_telegram():
                     caption=caption,
                     file_name="folders.json",
                 )
-                logger.info("folders.json sent as new document to Telegram.")
             except Exception as e2:
-                logger.error(f"Telegram backup failed completely: {e2}")
+                logger.error(f"Telegram backup failed: {e2}")
     finally:
         _backup_pending = False
 
 def _save_and_backup():
-    """Save to disk then schedule Telegram backup."""
     _save_folders()
     asyncio.create_task(_backup_to_telegram())
 
-# ─── Restore folders.json from Telegram on startup ───────────────────────────
+# ─── Restore from Telegram on startup ────────────────────────────────────────
 async def _restore_from_telegram():
-    """Download folders.json from pinned Telegram backup message."""
     global folder_db
     try:
         client = get_client()
@@ -97,26 +102,32 @@ async def _restore_from_telegram():
         msg = await client.get_messages(config.STORAGE_CHANNEL, backup_msg_id)
         if msg and msg.document and msg.document.file_name == "folders.json":
             dl_path = await msg.download(file_name=str(FOLDERS_FILE))
-            logger.info(f"folders.json restored from Telegram backup: {dl_path}")
+            logger.info(f"folders.json restored from Telegram.")
             with open(FOLDERS_FILE) as f:
                 folder_db = json.load(f)
             folder_db.setdefault("channel_registry", {})
             folder_db.setdefault("folders", {})
             folder_db.setdefault("file_assignments", {})
+            folder_db.setdefault("file_cache_data", {})
+
+            # Restore file_cache from persisted data — instant, no Telegram scan needed
+            restored = folder_db.get("file_cache_data", {})
+            file_cache.clear()
+            file_cache.update(restored)
             logger.info(
-                f"Restored: {len(folder_db.get('folders', {}))} folders, "
+                f"Restored: {len(file_cache)} files, "
+                f"{len(folder_db.get('folders', {}))} folders, "
                 f"{len(folder_db.get('channel_registry', {}))} channels"
             )
             return True
         else:
-            logger.info("No folders.json backup found in Telegram — starting fresh.")
+            logger.info("No folders.json backup in Telegram — will do full scan.")
             return False
     except Exception as e:
-        logger.warning(f"Could not restore from Telegram: {e}")
+        logger.warning(f"Could not restore from Telegram: {e} — will do full scan.")
         return False
 
 def _load_folders():
-    """Load from local disk (fallback if Telegram restore hasn't run yet)."""
     global folder_db
     if FOLDERS_FILE.exists():
         try:
@@ -125,8 +136,14 @@ def _load_folders():
             folder_db.setdefault("channel_registry", {})
             folder_db.setdefault("folders", {})
             folder_db.setdefault("file_assignments", {})
+            folder_db.setdefault("file_cache_data", {})
+            # Restore file cache from disk
+            restored = folder_db.get("file_cache_data", {})
+            file_cache.clear()
+            file_cache.update(restored)
+            logger.info(f"Loaded {len(file_cache)} files from local disk cache.")
         except Exception as e:
-            logger.warning(f"Could not load folders from disk: {e}")
+            logger.warning(f"Could not load from disk: {e}")
 
 # ─── SSE broadcast ────────────────────────────────────────────────────────────
 _sse_queues: list = []
@@ -195,14 +212,14 @@ _refresh_lock = asyncio.Lock()
 _refresh_in_progress = False
 _last_refresh: Optional[datetime] = None
 REFRESH_INTERVAL_SECONDS = 5 * 60
-FULL_SCAN_LIMIT = 10_000
+FULL_SCAN_LIMIT = 50_000  # scan up to 50k messages per channel
 
 async def refresh_channel(client, channel_id: int, new_cache: Dict):
     """Scan a single channel and populate new_cache with its files."""
-    anchor_id = 1  # always scan from message 1 to get ALL files
+    anchor_id = 1  # always scan from message 1
     upper_id  = anchor_id
 
-    # Resolve channel name from registry or Telegram
+    # Resolve channel name
     channel_name = None
     registry = folder_db.get("channel_registry", {})
     str_id = str(channel_id)
@@ -221,11 +238,11 @@ async def refresh_channel(client, channel_id: int, new_cache: Dict):
                     "auto_detected": True,
                 }
                 folder_db["channel_registry"] = registry
-                _save_and_backup()
+                _save_folders()
         except Exception:
             channel_name = str(channel_id)
 
-    # Find the highest existing message ID for this channel in file_cache
+    # Find highest existing message ID for this channel
     channel_prefix = f"ch{abs(channel_id)}_msg_"
     legacy_prefix  = "msg_"
     for key, v in file_cache.items():
@@ -236,8 +253,8 @@ async def refresh_channel(client, channel_id: int, new_cache: Dict):
 
     # Probe for upper bound
     for probe_ids in [
-        list(range(anchor_id + 1, anchor_id + 501, 50)),
-        list(range(upper_id + 1, upper_id + 101)),
+        list(range(upper_id + 1, upper_id + 201, 20)),
+        list(range(upper_id + 201, upper_id + 1001, 100)),
     ]:
         try:
             msgs = await client.get_messages(channel_id, probe_ids)
@@ -247,14 +264,18 @@ async def refresh_channel(client, channel_id: int, new_cache: Dict):
         except Exception:
             pass
 
-    start_id = max(1, upper_id - FULL_SCAN_LIMIT)
+    if upper_id <= 1:
+        upper_id = FULL_SCAN_LIMIT
+
+    start_id = 1
+    new_files = 0
     for batch_start in range(upper_id, start_id - 1, -200):
         batch_end = max(batch_start - 199, start_id)
         ids = list(range(batch_start, batch_end - 1, -1))
         try:
             messages = await client.get_messages(channel_id, ids)
         except Exception as e:
-            logger.warning(f"Batch fetch failed for channel {channel_id} at {batch_start}: {e} — stopping scan early")
+            logger.warning(f"Batch fetch failed for channel {channel_id} at {batch_start}: {e}")
             break
 
         for message in messages:
@@ -280,7 +301,10 @@ async def refresh_channel(client, channel_id: int, new_cache: Dict):
                 "caption": message.caption or "", "type": ftype, "mime": mime,
                 **folder_db.get("file_meta", {}).get(key, {}),
             }
-        await asyncio.sleep(0.1)
+            new_files += 1
+        await asyncio.sleep(0.05)
+
+    return new_files
 
 async def refresh_file_cache():
     global _refresh_in_progress, _last_refresh
@@ -302,8 +326,8 @@ async def refresh_file_cache():
                 if not channel_id:
                     continue
                 try:
-                    await refresh_channel(client, channel_id, new_cache)
-                    logger.info(f"Channel {channel_id} scanned: {sum(1 for v in new_cache.values() if v.get('channel_id') == channel_id)} files")
+                    count = await refresh_channel(client, channel_id, new_cache)
+                    logger.info(f"Channel {channel_id} scanned: {count} files")
                 except Exception as e:
                     logger.error(f"Failed to refresh channel {channel_id}: {e}")
                     failed_channels.add(channel_id)
@@ -311,10 +335,7 @@ async def refresh_file_cache():
             prev_count = len(file_cache)
             new_count  = len(new_cache)
             if prev_count > 0 and new_count < prev_count * 0.7:
-                logger.warning(
-                    f"Refresh returned only {new_count}/{prev_count} files — "
-                    f"merging to avoid data loss (FloodWait likely)"
-                )
+                logger.warning(f"Scan got {new_count}/{prev_count} — merging to avoid data loss")
                 merged = dict(file_cache)
                 merged.update(new_cache)
                 new_cache = merged
@@ -331,13 +352,17 @@ async def refresh_file_cache():
             epubs  = sum(1 for f in file_cache.values() if f["type"] == "epub")
             videos = sum(1 for f in file_cache.values() if f["type"] == "video")
             logger.info(f"Cache refreshed: {pdfs} PDFs, {epubs} EPUBs, {videos} Videos across {len(channels)} channel(s)")
+
+            # Save updated file index to Telegram so next startup is instant
+            _save_and_backup()
+
         except Exception as e:
             logger.error(f"Cache refresh failed: {e}")
         finally:
             _refresh_in_progress = False
 
 async def _periodic_refresh():
-    await asyncio.sleep(90)
+    await asyncio.sleep(300)  # wait 5 min before first periodic refresh
     while True:
         await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
         await refresh_file_cache()
@@ -345,19 +370,23 @@ async def _periodic_refresh():
 # ─── App lifecycle ────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. Load from disk first (fast, works if disk has it)
+    # 1. Load from local disk (fast fallback)
     _load_folders()
     # 2. Init Telegram clients
     await initialize_clients()
-    # 3. Restore from Telegram (overwrites disk data with latest backup)
+    # 3. Restore from Telegram — overwrites disk data with latest backup
+    #    This also restores file_cache instantly with no Telegram scan
     restored = await _restore_from_telegram()
-    if not restored:
-        logger.info("Using local folders.json (or fresh start)")
+    if not restored and not file_cache:
+        logger.info("No backup found — scheduling full scan")
 
     encoder.init_encoder(file_cache, folder_db, _save_and_backup)
     asyncio.create_task(encoder.encoder_worker())
+
+    # Always do a background scan to pick up any new files since last backup
     asyncio.create_task(refresh_file_cache())
     asyncio.create_task(_periodic_refresh())
+
     try:
         from bot_handler import setup_bot_handlers
         from utils.clients import multi_clients
@@ -367,6 +396,7 @@ async def lifespan(app: FastAPI):
             break
     except Exception as e:
         logger.error(f"Bot handler setup failed: {e}")
+
     if config.WEBSITE_URL:
         asyncio.create_task(auto_ping_website(config.WEBSITE_URL))
     yield
@@ -398,11 +428,10 @@ async def health():
     videos = sum(1 for f in file_cache.values() if f.get("type") == "video")
     config_channels = set(config.STORAGE_CHANNELS if config.STORAGE_CHANNELS else [config.STORAGE_CHANNEL])
     registry_channels = {v.get("id") or int(k) for k, v in folder_db.get("channel_registry", {}).items()}
-    all_channels = config_channels | registry_channels
     return {
         "status": "ok", "files_cached": len(file_cache),
         "pdfs": pdfs, "epubs": epubs, "videos": videos,
-        "channels": len(all_channels),
+        "channels": len(config_channels | registry_channels),
         "registered_channels": len(folder_db.get("channel_registry", {})),
         "last_refresh": _last_refresh.isoformat() if _last_refresh else None,
         "refresh_in_progress": _refresh_in_progress,
@@ -446,12 +475,7 @@ async def get_qualities(file_id: str, user=Depends(require_auth)):
     result = {"original": {"file_id": file_id, "label": "Original", "size": file_cache[file_id].get("size", 0), "ready": True}}
     for label, enc_file_id in variants.items():
         enc_info = file_cache.get(enc_file_id, {})
-        result[label] = {
-            "file_id": enc_file_id,
-            "label":   label,
-            "size":    enc_info.get("size", 0),
-            "ready":   bool(enc_info),
-        }
+        result[label] = {"file_id": enc_file_id, "label": label, "size": enc_info.get("size", 0), "ready": bool(enc_info)}
     from encoder import QUALITY_PRESETS
     for q_label, *_ in QUALITY_PRESETS:
         if q_label not in result:
@@ -489,13 +513,11 @@ async def audio_info(file_id: str, user=Depends(require_auth)):
         from utils.clients import get_client
         from utils.streamer.custom_dl import ByteStreamer
         from utils.streamer import class_cache
-
         client = get_client()
         if client not in class_cache:
             class_cache[client] = ByteStreamer(client)
         streamer = class_cache[client]
         file_id_obj = await streamer.get_file_properties(channel_id, info["message_id"])
-
         chunks = []
         collected = 0
         probe_limit = 128 * 1024
@@ -505,11 +527,9 @@ async def audio_info(file_id: str, user=Depends(require_auth)):
             if collected >= probe_limit:
                 break
         sample = b"".join(chunks)[:probe_limit]
-
         proc = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "quiet", "-print_format", "json",
-            "-show_streams", "-select_streams", "a",
-            "-i", "pipe:0",
+            "-show_streams", "-select_streams", "a", "-i", "pipe:0",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
@@ -518,18 +538,15 @@ async def audio_info(file_id: str, user=Depends(require_auth)):
         probe = _json.loads(stdout or b"{}")
         streams = probe.get("streams", [])
         codec = streams[0].get("codec_name", "unknown") if streams else "unknown"
-
         BROWSER_SAFE = {"aac", "mp3", "opus", "vorbis", "flac", "pcm_s16le", "pcm_u8"}
         needs_transcode = codec.lower() not in BROWSER_SAFE
-
         audio_tracks = []
         for i, s in enumerate(streams):
             tags = s.get("tags", {})
             lang  = tags.get("language") or tags.get("LANGUAGE") or ""
-            title = tags.get("title")    or tags.get("TITLE")    or ""
+            title = tags.get("title") or tags.get("TITLE") or ""
             label = title or (lang.upper() if lang and lang != "und" else f"Track {i+1}")
             audio_tracks.append({"index": i, "codec": s.get("codec_name",""), "label": label, "lang": lang})
-
         return {"codec": codec, "needs_transcode": needs_transcode, "streams": len(streams), "audio_tracks": audio_tracks}
     except Exception as e:
         logger.warning(f"audio-info probe failed for {file_id}: {e}")
@@ -540,7 +557,7 @@ async def stream_file(file_id: str, request: Request, transcode: bool = False, s
     if file_id not in file_cache:
         if not _refresh_in_progress:
             asyncio.create_task(refresh_file_cache())
-        raise HTTPException(status_code=404, detail="File not found — cache may be refreshing, please retry shortly")
+        raise HTTPException(status_code=404, detail="File not found — cache may be refreshing, retry shortly")
     info = file_cache[file_id]
     channel_id = info.get("channel_id", config.STORAGE_CHANNEL)
 
@@ -550,7 +567,7 @@ async def stream_file(file_id: str, request: Request, transcode: bool = False, s
     from utils.clients import get_client
     from utils.streamer.custom_dl import ByteStreamer
     from utils.streamer import class_cache
-    import tempfile, os
+    import os
 
     client = get_client()
     if client not in class_cache:
@@ -569,74 +586,53 @@ async def stream_file(file_id: str, request: Request, transcode: bool = False, s
         except FileExistsError:
             os.unlink(fifo_path)
             os.mkfifo(fifo_path)
-
         seek_args = ["-ss", str(start_time)] if start_time > 0 else []
         proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y",
-            "-fflags", "+genpts+discardcorrupt",
-            "-analyzeduration", "10M",
-            "-probesize", "10M",
-            "-i", fifo_path,
-            *seek_args,
-            "-map", "0:v:0",
-            "-map", f"0:a:{audio_track}",
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-ac", "2",
+            "ffmpeg", "-y", "-fflags", "+genpts+discardcorrupt",
+            "-analyzeduration", "10M", "-probesize", "10M",
+            "-i", fifo_path, *seek_args,
+            "-map", "0:v:0", "-map", f"0:a:{audio_track}",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ac", "2",
             "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-            "-f", "mp4",
-            "pipe:1",
+            "-f", "mp4", "pipe:1",
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-
         async def feed_fifo():
             try:
                 loop = asyncio.get_event_loop()
                 fd = await loop.run_in_executor(None, lambda: os.open(fifo_path, os.O_WRONLY))
                 async for chunk in client.stream_media(file_id_obj.file_id, offset=0, limit=99999):
-                    if not chunk:
-                        break
+                    if not chunk: break
                     await loop.run_in_executor(None, lambda c=chunk: os.write(fd, c))
             except Exception as e:
                 logger.error(f"FIFO feeder error: {e}")
             finally:
                 try: os.close(fd)
-                except Exception: pass
+                except: pass
                 try: os.unlink(fifo_path)
-                except Exception: pass
-
+                except: pass
         feed_task = asyncio.create_task(feed_fifo())
-
         try:
             while True:
                 chunk = await proc.stdout.read(65536)
-                if not chunk:
-                    break
+                if not chunk: break
                 yield chunk
-        except (GeneratorExit, asyncio.CancelledError):
-            pass
-        except Exception as e:
-            logger.error(f"Transcode read error: {e}")
+        except (GeneratorExit, asyncio.CancelledError): pass
+        except Exception as e: logger.error(f"Transcode read error: {e}")
         finally:
             feed_task.cancel()
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception: pass
+            try: proc.kill(); await proc.wait()
+            except: pass
             try: os.unlink(fifo_path)
-            except Exception: pass
+            except: pass
 
     return StreamingResponse(
-        transcode_stream(),
-        media_type="video/mp4",
+        transcode_stream(), media_type="video/mp4",
         headers={
-            "Content-Type": "video/mp4",
-            "Cache-Control": "no-store",
-            "X-Accel-Buffering": "no",
-            "Accept-Ranges": "none",
+            "Content-Type": "video/mp4", "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no", "Accept-Ranges": "none",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
         },
@@ -814,10 +810,8 @@ async def sse_events(request: Request, token: str = None):
         verify_jwt(token)
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
-
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
     _sse_queues.append(queue)
-
     async def event_generator():
         try:
             yield ": keepalive\n\n"
@@ -834,7 +828,6 @@ async def sse_events(request: Request, token: str = None):
         finally:
             try: _sse_queues.remove(queue)
             except ValueError: pass
-
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
@@ -842,7 +835,6 @@ async def sse_events(request: Request, token: str = None):
     )
 
 # ─── Channel Registry ─────────────────────────────────────────────────────────
-
 @app.get("/api/channels")
 async def list_channels(user=Depends(require_auth)):
     registry = folder_db.get("channel_registry", {})
@@ -850,12 +842,7 @@ async def list_channels(user=Depends(require_auth)):
     for str_id, ch in registry.items():
         ch_id = ch.get("id") or int(str_id)
         file_count = sum(1 for f in file_cache.values() if f.get("channel_id") == ch_id)
-        channels.append({
-            **ch,
-            "id": ch_id,
-            "str_id": str_id,
-            "file_count": file_count,
-        })
+        channels.append({**ch, "id": ch_id, "str_id": str_id, "file_count": file_count})
     channels.sort(key=lambda c: c.get("registered_at", ""), reverse=True)
     return {"channels": channels}
 
