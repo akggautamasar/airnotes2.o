@@ -101,8 +101,12 @@ async def _restore_from_telegram():
         backup_msg_id = getattr(config, "FOLDERS_BACKUP_MSG_ID", None) or config.DATABASE_BACKUP_MSG_ID
         msg = await client.get_messages(config.STORAGE_CHANNEL, backup_msg_id)
         if msg and msg.document and msg.document.file_name == "folders.json":
-            dl_path = await msg.download(file_name=str(FOLDERS_FILE))
-            logger.info(f"folders.json restored from Telegram.")
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            # Download to memory then write to disk to avoid path issues
+            raw = await client.download_media(msg, in_memory=True)
+            data = bytes(raw.getbuffer()) if hasattr(raw, "getbuffer") else raw.read()
+            FOLDERS_FILE.write_bytes(data)
+            logger.info("folders.json restored from Telegram.")
             with open(FOLDERS_FILE) as f:
                 folder_db = json.load(f)
             folder_db.setdefault("channel_registry", {})
