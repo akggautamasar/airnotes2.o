@@ -23,6 +23,14 @@ else:
 
 DATABASE_BACKUP_MSG_ID = int(os.getenv("DATABASE_BACKUP_MSG_ID", "1"))
 
+# Separate message ID for folders.json backup (stores channel registry + folders)
+# If not set, falls back to DATABASE_BACKUP_MSG_ID
+# IMPORTANT: Set this to a DIFFERENT message ID than DATABASE_BACKUP_MSG_ID
+# to avoid overwriting your file anchor message.
+# Just send any message to your storage channel and use its ID here.
+_folders_backup_raw = os.getenv("FOLDERS_BACKUP_MSG_ID", "").strip()
+FOLDERS_BACKUP_MSG_ID = int(_folders_backup_raw) if _folders_backup_raw else None
+
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "airnotes123")
 JWT_SECRET     = os.getenv("JWT_SECRET", "airnotes_super_secret_key_change_me")
 

@@ -55,9 +55,10 @@ async def _backup_to_telegram():
         )
         try:
             from pyrogram.types import InputMediaDocument
+            backup_msg_id = getattr(config, "FOLDERS_BACKUP_MSG_ID", None) or config.DATABASE_BACKUP_MSG_ID
             await client.edit_message_media(
                 config.STORAGE_CHANNEL,
-                config.DATABASE_BACKUP_MSG_ID,
+                backup_msg_id,
                 media=InputMediaDocument(
                     str(FOLDERS_FILE),
                     caption=caption,
@@ -92,7 +93,8 @@ async def _restore_from_telegram():
     global folder_db
     try:
         client = get_client()
-        msg = await client.get_messages(config.STORAGE_CHANNEL, config.DATABASE_BACKUP_MSG_ID)
+        backup_msg_id = getattr(config, "FOLDERS_BACKUP_MSG_ID", None) or config.DATABASE_BACKUP_MSG_ID
+        msg = await client.get_messages(config.STORAGE_CHANNEL, backup_msg_id)
         if msg and msg.document and msg.document.file_name == "folders.json":
             dl_path = await msg.download(file_name=str(FOLDERS_FILE))
             logger.info(f"folders.json restored from Telegram backup: {dl_path}")
@@ -197,7 +199,7 @@ FULL_SCAN_LIMIT = 10_000
 
 async def refresh_channel(client, channel_id: int, new_cache: Dict):
     """Scan a single channel and populate new_cache with its files."""
-    anchor_id = config.DATABASE_BACKUP_MSG_ID
+    anchor_id = 1  # always scan from message 1 to get ALL files
     upper_id  = anchor_id
 
     # Resolve channel name from registry or Telegram
@@ -224,7 +226,7 @@ async def refresh_channel(client, channel_id: int, new_cache: Dict):
             channel_name = str(channel_id)
 
     # Find the highest existing message ID for this channel in file_cache
-    channel_prefix = f"ch{channel_id}_msg_"
+    channel_prefix = f"ch{abs(channel_id)}_msg_"
     legacy_prefix  = "msg_"
     for key, v in file_cache.items():
         if key.startswith(channel_prefix) or (channel_id == config.STORAGE_CHANNEL and key.startswith(legacy_prefix)):
@@ -269,7 +271,7 @@ async def refresh_channel(client, channel_id: int, new_cache: Dict):
             if channel_id == config.STORAGE_CHANNEL:
                 key = f"msg_{message.id}"
             else:
-                key = f"ch{channel_id}_msg_{message.id}"
+                key = f"ch{abs(channel_id)}_msg_{message.id}"
             new_cache[key] = {
                 "id": key, "message_id": message.id, "channel_id": channel_id,
                 "channel_name": channel_name,
