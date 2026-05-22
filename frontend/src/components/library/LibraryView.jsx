@@ -7,6 +7,7 @@ import { progressStore, recentStore } from '../../utils/storage';
 import { generateThumbnailsBatch } from '../../utils/thumbnails';
 import FileCard from './FileCard';
 import FolderLockModal from '../ui/FolderLockModal';
+import ChannelView from '../channels/ChannelView';
 
 const container = { hidden: {}, show: { transition: { staggerChildren: 0.04 } } };
 const itemV     = { hidden: { opacity: 0, y: 12 }, show: { opacity: 1, y: 0, transition: { duration: 0.25, ease: [0.22,1,0.36,1] } } };
@@ -150,6 +151,11 @@ export default function LibraryView({ onSearch }) {
         )}
       </>
     );
+  }
+
+  // ── Channel section routing ──────────────────────────────────────────────
+  if (state.activeSection === 'channel') {
+    return <ChannelView />;
   }
 
   return (
