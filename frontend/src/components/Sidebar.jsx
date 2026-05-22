@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   BookOpen, Clock, Home, FolderOpen, Folder, Plus, ChevronRight,
   Lock, Unlock, Trash2, Pencil, Check, X, MoreHorizontal,
-  BookMarked, Search, RefreshCw, LogOut,
+  BookMarked, Search, RefreshCw, LogOut, Hash, Globe,
 } from 'lucide-react';
 import { useApp } from '../store/AppContext';
 import { api } from '../utils/api';
@@ -89,6 +89,42 @@ export default function Sidebar({ onSearch, onRefresh }) {
 
         {/* Divider */}
         <div className="mx-3 my-2 border-t border-ink-800/40 shrink-0" />
+
+        {/* Channels */}
+        {state.channels.length > 0 && (
+          <div className="px-3 mb-1 shrink-0">
+            <div className="flex items-center justify-between px-1 py-1.5 mb-0.5">
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-ink-600">Channels</span>
+            </div>
+            {/* All Channels */}
+            <button
+              onClick={() => actions.setActiveChannel('__all__')}
+              className={`sidebar-item ${state.activeSection === 'channel' && state.activeChannelId === '__all__' ? 'active' : ''}`}
+            >
+              <Globe size={13} className="shrink-0 text-accent/60" />
+              <span className="flex-1 text-left text-xs">All Channels</span>
+              <span className="text-[10px] bg-ink-800 text-ink-500 px-1.5 py-0.5 rounded-full shrink-0">
+                {state.channels.reduce((s, c) => s + (c.file_count || 0), 0)}
+              </span>
+            </button>
+            {state.channels.map(ch => (
+              <button
+                key={ch.str_id}
+                onClick={() => actions.setActiveChannel(ch.str_id)}
+                className={`sidebar-item ${state.activeSection === 'channel' && state.activeChannelId === ch.str_id ? 'active' : ''}`}
+              >
+                <Hash size={13} className="shrink-0 text-accent/50" />
+                <span className="flex-1 text-left text-xs truncate">{ch.name}</span>
+                {ch.file_count > 0 && (
+                  <span className="text-[10px] bg-ink-800 text-ink-500 px-1.5 py-0.5 rounded-full shrink-0">{ch.file_count}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Divider before Folders */}
+        {state.channels.length > 0 && <div className="mx-3 my-1 border-t border-ink-800/40 shrink-0" />}
 
         {/* Folders */}
         <div className="flex-1 overflow-y-auto px-3 pb-2">
