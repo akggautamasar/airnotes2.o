@@ -41,6 +41,13 @@ export const api = {
   verifyFolderPassword: (id, hash) => request(`/folders/${encodeURIComponent(id)}/verify-password`, { method: 'POST', body: JSON.stringify({ password_hash: hash }) }),
   getFileAssignments:   () => request('/assignments'),
 
+  // Channel registry
+  getChannels:          () => request('/channels'),
+  registerChannel:      (data) => request('/channels/register', { method: 'POST', body: JSON.stringify(data) }),
+  deleteChannel:        (strId) => request(`/channels/${encodeURIComponent(strId)}`, { method: 'DELETE' }),
+  getChannelFiles:      (strId, type = null) => request(`/channels/${encodeURIComponent(strId)}/files${type ? '?type=' + type : ''}`),
+  getAllChannelsFiles:   (type = null) => request(`/channels-all-files${type ? '?type=' + type : ''}`),
+
   // Stream URLs — token appended as query param for <video> / <audio> tags
   // which cannot send Authorization headers
   getStreamUrl: (fileId) => {
