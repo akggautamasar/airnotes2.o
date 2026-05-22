@@ -845,7 +845,7 @@ async def list_channels(user=Depends(require_auth)):
     channels = []
     for str_id, ch in registry.items():
         ch_id = ch.get("id") or int(str_id)
-        file_count = sum(1 for f in file_cache.values() if f.get("channel_id") == ch_id)
+        file_count = sum(1 for f in file_cache.values() if f.get("channel_id") in (ch_id, abs(ch_id), -abs(ch_id)))
         channels.append({**ch, "id": ch_id, "str_id": str_id, "file_count": file_count})
     channels.sort(key=lambda c: c.get("registered_at", ""), reverse=True)
     return {"channels": channels}
@@ -888,7 +888,8 @@ async def get_channel_files(channel_str_id: str, type: str = None, user=Depends(
     if channel_str_id not in registry:
         raise HTTPException(status_code=404, detail="Channel not found")
     ch_id = registry[channel_str_id].get("id") or int(channel_str_id)
-    files = [f for f in file_cache.values() if f.get("channel_id") == ch_id]
+    # Match by channel_id — handle both positive and negative stored values
+    files = [f for f in file_cache.values() if f.get("channel_id") == ch_id or f.get("channel_id") == abs(ch_id) or f.get("channel_id") == -abs(ch_id)]
     if type in ("pdf", "epub", "video"):
         files = [f for f in files if f.get("type") == type]
     files.sort(key=lambda f: f["date"], reverse=True)
@@ -897,9 +898,14 @@ async def get_channel_files(channel_str_id: str, type: str = None, user=Depends(
 @app.get("/api/channels-all-files")
 async def get_all_channels_files(type: str = None, user=Depends(require_auth)):
     registry = folder_db.get("channel_registry", {})
-    registered_ids = {v.get("id") or int(k) for k, v in registry.items()}
+    registered_ids = set()
+    for k, v in registry.items():
+        ch_id = v.get("id") or int(k)
+        registered_ids.add(ch_id)
+        registered_ids.add(abs(ch_id))
+        registered_ids.add(-abs(ch_id))
     files = [f for f in file_cache.values() if f.get("channel_id") in registered_ids]
     if type in ("pdf", "epub", "video"):
         files = [f for f in files if f.get("type") == type]
     files.sort(key=lambda f: f["date"], reverse=True)
-    return {"files": files, "total": len(files), "channel_count": len(registered_ids)}
+    return {"files": files, "total": len(files), "channel_count": len(registry)}
