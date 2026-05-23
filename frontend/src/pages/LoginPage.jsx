@@ -15,6 +15,7 @@ export default function LoginPage() {
     try {
       const res = await api.login(password);
       localStorage.setItem('airnotes_token', res.token);
+      actions.dispatch?.({ type: 'SET_TOKEN', payload: res.token });
       actions.setAuth(true);
     } catch (err) {
       setError(err.message || 'Invalid password');
