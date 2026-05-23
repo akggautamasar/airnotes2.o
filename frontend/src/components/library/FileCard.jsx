@@ -14,6 +14,18 @@ export default function FileCard({ file, progress, thumbnailUrl, listMode = fals
   const [renameVal, setRenameVal] = useState('');
   const [loading, setLoading] = useState(null);
   const [showPicker, setShowPicker] = useState(false);
+  const [thumbVisible, setThumbVisible] = useState(false);
+  const cardRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!thumbnailUrl) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setThumbVisible(true); obs.disconnect(); } },
+      { rootMargin: '200px' }
+    );
+    if (cardRef.current) obs.observe(cardRef.current);
+    return () => obs.disconnect();
+  }, [thumbnailUrl]);
   const menuRef  = useRef(null);
   const renameRef= useRef(null);
 
@@ -121,7 +133,7 @@ export default function FileCard({ file, progress, thumbnailUrl, listMode = fals
           style={{ background: color }}
         >
           {thumbnailUrl
-            ? <img src={thumbnailUrl} loading="lazy" alt="" className="w-full h-full object-cover rounded-lg" />
+            ? (thumbVisible ? <img src={thumbnailUrl} alt="" className="w-full h-full object-cover rounded-lg" /> : <div className="w-full h-full bg-ink-800 rounded-lg" />)
             : initials}
         </div>
 
@@ -178,26 +190,20 @@ export default function FileCard({ file, progress, thumbnailUrl, listMode = fals
   }
 
   // ── Grid mode ──────────────────────────────────────────────────────────────
-  // Fetch stream URL when picker is about to open
-  React.useEffect(() => {
-    if (!showPicker || file._streamUrl) return;
-    api.getStreamToken().then(token => {
-      file._streamUrl = `${import.meta.env.VITE_API_URL || ''}/api/files/${file.id}/stream?token=${token}`;
-    }).catch(() => {
-      file._streamUrl = `${import.meta.env.VITE_API_URL || ''}/api/files/${file.id}/stream`;
-    });
-  }, [showPicker]);
+  // Pre-compute stream URL
+  const streamUrl = React.useMemo(() => api.getStreamUrl(file.id), [file.id]);
 
   return (
     <React.Fragment>
     {showPicker && (
       <PlayerPickerModal
         file={file}
-        streamUrl={file._streamUrl || `${import.meta.env.VITE_API_URL || ''}/api/files/${file.id}/stream`}
+        streamUrl={streamUrl}
         onClose={() => setShowPicker(false)}
       />
     )}
     <motion.div
+      ref={cardRef}
       layout
       whileHover={{ y: -1 }}
       className={`group relative rounded-2xl border border-ink-800/50 bg-ink-900/50
@@ -211,7 +217,7 @@ export default function FileCard({ file, progress, thumbnailUrl, listMode = fals
         style={thumbnailUrl ? {} : { background: `${color}18` }}
       >
         {thumbnailUrl ? (
-          <img src={thumbnailUrl} loading="lazy" alt="" className="w-full h-full object-cover" />
+          thumbVisible ? <img src={thumbnailUrl} alt="" className="w-full h-full object-cover" /> : <div className="w-full h-full bg-ink-800" />
         ) : (
           <span className="text-4xl font-bold select-none" style={{ color: `${color}60` }}>
             {initials}
