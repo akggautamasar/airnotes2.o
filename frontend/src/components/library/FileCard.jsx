@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { FileText, BookOpen, Film, Clock, MoreVertical, FolderPlus, FolderMinus, Trash2, Pencil, Copy, Check, X } from 'lucide-react';
+import { FileText, BookOpen, Film, Clock, MoreVertical, FolderPlus, FolderMinus, Trash2, Pencil, Copy, Check, X, Music, Image } from 'lucide-react';
+import PlayerPickerModal from '../ui/PlayerPickerModal';
 import { useApp } from '../../store/AppContext';
 import { api } from '../../utils/api';
 import { progressStore, recentStore } from '../../utils/storage';
@@ -12,6 +13,7 @@ export default function FileCard({ file, progress, thumbnail, listMode = false, 
   const [renaming, setRenaming] = useState(false);
   const [renameVal, setRenameVal] = useState('');
   const [loading, setLoading] = useState(null);
+  const [showPicker, setShowPicker] = useState(false);
   const menuRef  = useRef(null);
   const renameRef= useRef(null);
 
@@ -22,6 +24,8 @@ export default function FileCard({ file, progress, thumbnail, listMode = false, 
   const isPdf    = file.type === 'pdf';
   const isEpub   = file.type === 'epub';
   const isVideo  = file.type === 'video';
+  const isAudio  = file.type === 'audio';
+  const isImage  = file.type === 'image';
 
   useEffect(() => {
     if (!showMenu) return;
@@ -174,7 +178,25 @@ export default function FileCard({ file, progress, thumbnail, listMode = false, 
   }
 
   // ── Grid mode ──────────────────────────────────────────────────────────────
+  // Fetch stream URL when picker is about to open
+  React.useEffect(() => {
+    if (!showPicker || file._streamUrl) return;
+    api.getStreamToken().then(token => {
+      file._streamUrl = `${import.meta.env.VITE_API_URL || ''}/api/files/${file.id}/stream?token=${token}`;
+    }).catch(() => {
+      file._streamUrl = `${import.meta.env.VITE_API_URL || ''}/api/files/${file.id}/stream`;
+    });
+  }, [showPicker]);
+
   return (
+    <>
+    {showPicker && (
+      <PlayerPickerModal
+        file={file}
+        streamUrl={file._streamUrl || `${import.meta.env.VITE_API_URL || ''}/api/files/${file.id}/stream`}
+        onClose={() => setShowPicker(false)}
+      />
+    )}
     <motion.div
       layout
       whileHover={{ y: -1 }}
@@ -296,5 +318,6 @@ function ContextMenu({ file, title, currentFolder, availableFolders, busy, onAss
         </button>
       </div>
     </div>
+    </>
   );
 }
