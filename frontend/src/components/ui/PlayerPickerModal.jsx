@@ -1,5 +1,5 @@
 import React from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import ReactDOM from 'react-dom';
 import { X, Zap, Monitor, ExternalLink, Download, Music, Image } from 'lucide-react';
 import { useApp } from '../../store/AppContext';
 
@@ -99,19 +99,15 @@ export default function PlayerPickerModal({ file, streamUrl, onClose }) {
     },
   });
 
-  return (
-    <AnimatePresence>
-      <motion.div
-        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-        className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4"
-        onClick={onClose}
+  return ReactDOM.createPortal(
+    <div
+      className="fixed inset-0 z-[9999] flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-sm bg-ink-900 border border-ink-700/50 rounded-2xl overflow-hidden shadow-2xl"
+        onClick={e => e.stopPropagation()}
       >
-        <motion.div
-          initial={{ y: 60, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 60, opacity: 0 }}
-          transition={{ type: 'spring', damping: 24, stiffness: 300 }}
-          className="w-full max-w-sm bg-ink-900 border border-ink-700/50 rounded-2xl overflow-hidden shadow-2xl"
-          onClick={e => e.stopPropagation()}
-        >
           {/* Header */}
           <div className="flex items-start justify-between p-4 border-b border-ink-800/50">
             <div className="flex-1 min-w-0 pr-3">
@@ -143,8 +139,7 @@ export default function PlayerPickerModal({ file, streamUrl, onClose }) {
               </button>
             ))}
           </div>
-        </motion.div>
-      </motion.div>
-    </AnimatePresence>
-  );
+      </div>
+    </div>
+  , document.body);
 }
