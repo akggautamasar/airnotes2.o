@@ -119,22 +119,25 @@ export default function VideoPlayer() {
       .then(q => setQualities(q))
       .catch(() => {});  // non-critical, quality selector just won't show
 
-    const BROWSER_SAFE = new Set(['aac','mp3','opus','vorbis','flac','pcm_s16le','pcm_u8']);
-    api.getAudioInfo(file.id)
-      .then(({ codec, needs_transcode, audio_tracks }) => {
-        setAudioCodec(codec);
-        if (audio_tracks && audio_tracks.length > 1) setAudioTracks(audio_tracks);
-        if (needs_transcode) {
+    // Delay audio codec check by 1s so video starts buffering immediately
+    const _audioTimer = setTimeout(() => {
+      api.getAudioInfo(file.id)
+        .then(({ codec, needs_transcode, audio_tracks }) => {
+          setAudioCodec(codec);
+          if (audio_tracks && audio_tracks.length > 1) setAudioTracks(audio_tracks);
+          if (needs_transcode) {
+            setUseTranscode(true);
+            const v = videoRef.current;
+            if (v) { const t = v.currentTime; v.load(); v.currentTime = t; v.play().catch(() => {}); }
+          }
+        })
+        .catch(() => {
           setUseTranscode(true);
           const v = videoRef.current;
-          if (v) { const t = v.currentTime; v.load(); v.currentTime = t; v.play().catch(() => {}); }
-        }
-      })
-      .catch(() => {
-        setUseTranscode(true);
-        const v = videoRef.current;
-        if (v) { v.load(); v.play().catch(() => {}); }
-      });
+          if (v) { v.load(); v.play().catch(() => {}); }
+        });
+    }, 1000);
+    return () => clearTimeout(_audioTimer);
   }, [file?.id]);
 
   // ── Periodic position save (every 5s while playing) ──────────────────────

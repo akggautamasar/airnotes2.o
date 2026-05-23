@@ -69,8 +69,16 @@ export default function PDFReader() {
     try {
       const lib = await getPdfJs();
       const url = api.getStreamUrl(file.id);
-      const task = lib.getDocument({ url, httpHeaders: api.authHeaders() });
-      task.onProgress = ({ loaded, total }) => { if (total) setLoadPct(Math.round(loaded/total*100)); };
+      const task = lib.getDocument({
+        url,
+        httpHeaders: api.authHeaders(),
+        rangeChunkSize: 65536,   // 64KB chunks — fast first page
+        disableRange: false,     // enable range requests
+        disableStream: false,    // enable streaming
+      });
+      task.onProgress = ({ loaded, total }) => {
+        if (total) setLoadPct(Math.round(loaded / total * 100));
+      };
       const doc = await task.promise;
       setPdfDoc(doc);
       setNumPages(doc.numPages);
