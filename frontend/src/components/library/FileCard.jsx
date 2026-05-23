@@ -189,7 +189,7 @@ export default function FileCard({ file, progress, thumbnailUrl, listMode = fals
   }, [showPicker]);
 
   return (
-    <>
+    <React.Fragment>
     {showPicker && (
       <PlayerPickerModal
         file={file}
@@ -284,6 +284,7 @@ export default function FileCard({ file, progress, thumbnailUrl, listMode = fals
         )}
       </div>
     </motion.div>
+    </React.Fragment>
   );
 }
 
@@ -318,6 +319,5 @@ function ContextMenu({ file, title, currentFolder, availableFolders, busy, onAss
         </button>
       </div>
     </div>
-    </>
   );
 }
