@@ -17,14 +17,11 @@ export default function LibraryView({ onSearch }) {
   const [progresses, setProgresses]     = useState({});
 
   const [refreshing, setRefreshing]     = useState(false);
-  const [thumbLoading, setThumbLoading] = useState(false);
   const [lockModal, setLockModal]       = useState(null);
   const [typeFilter, setTypeFilter]     = useState('all'); // 'all'|'pdf'|'epub'|'video'
 
   useEffect(() => { loadProgress(); }, []);
-  useEffect(() => {
-    if (state.files.length > 0) generateThumbs();
-  }, [state.files]);
+
 
   async function loadProgress() {
     try {
