@@ -284,7 +284,6 @@ export default function FileCard({ file, progress, thumbnailUrl, listMode = fals
         )}
       </div>
     </motion.div>
-    </>
   );
 }
 
@@ -319,5 +318,6 @@ function ContextMenu({ file, title, currentFolder, availableFolders, busy, onAss
         </button>
       </div>
     </div>
+    </>
   );
 }
