@@ -38,13 +38,10 @@ export default function EpubViewer() {
   async function loadEpub() {
     setLoading(true); setError('');
     try {
-      // Fetch epub as ArrayBuffer
-      const res   = await fetch(api.getStreamUrl(file.id), { headers: api.authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const buf   = await res.arrayBuffer();
-
       const ePub  = (await import('epubjs')).default;
-      const bk    = ePub(buf);
+      // Use stream URL directly — epubjs can load from URL
+      const streamUrl = api.getStreamUrl(file.id);
+      const bk    = ePub(streamUrl);
       bookRef.current = bk;
 
       // Get ToC
