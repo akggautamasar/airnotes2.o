@@ -46,6 +46,8 @@ export const api = {
     return token;
   }),
 
+  getReadyThumbnails:  () => request('/thumbnails/ready'),
+
   // Channel registry
   getChannels:          () => request('/channels'),
   registerChannel:      (data) => request('/channels/register', { method: 'POST', body: JSON.stringify(data) }),
