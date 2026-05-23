@@ -4,7 +4,7 @@ import { Grid, List, RefreshCw, AlertCircle, BookOpen, Loader2, BookMarked, Cloc
 import { useApp } from '../../store/AppContext';
 import { api } from '../../utils/api';
 import { progressStore, recentStore } from '../../utils/storage';
-import { getThumbnailUrl, hasThumbnail } from '../../utils/thumbnails';
+import { getThumbnailUrl, hasThumbnail, isThumbnailReady, loadReadyThumbnails } from '../../utils/thumbnails';
 import FileCard from './FileCard';
 import FolderLockModal from '../ui/FolderLockModal';
 import ChannelView from '../channels/ChannelView';
@@ -19,6 +19,11 @@ export default function LibraryView({ onSearch }) {
   const [refreshing, setRefreshing]     = useState(false);
   const [lockModal, setLockModal]       = useState(null);
   const [typeFilter, setTypeFilter]     = useState('all'); // 'all'|'pdf'|'epub'|'video'
+
+  // Load which thumbnails are ready from server
+  useEffect(() => {
+    loadReadyThumbnails();
+  }, []);
 
   useEffect(() => { loadProgress(); }, []);
 
@@ -199,7 +204,7 @@ export default function LibraryView({ onSearch }) {
                 <FileCard
                   file={file}
                   progress={progresses[file.id]}
-                  thumbnailUrl={hasThumbnail(file.type) ? getThumbnailUrl(file.id) : undefined}
+                  thumbnailUrl={hasThumbnail(file.type) && isThumbnailReady(file.id) ? getThumbnailUrl(file.id) : undefined}
                   onProgressUpdate={loadProgress}
                 />
               </motion.div>
@@ -221,7 +226,7 @@ export default function LibraryView({ onSearch }) {
                   <FileCard
                     file={file}
                     progress={progresses[file.id]}
-                    thumbnailUrl={hasThumbnail(file.type) ? getThumbnailUrl(file.id) : undefined}
+                    thumbnailUrl={hasThumbnail(file.type) && isThumbnailReady(file.id) ? getThumbnailUrl(file.id) : undefined}
                     listMode
                     onProgressUpdate={loadProgress}
                   />
