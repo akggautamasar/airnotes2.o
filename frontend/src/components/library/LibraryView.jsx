@@ -4,7 +4,7 @@ import { Grid, List, RefreshCw, AlertCircle, BookOpen, Loader2, BookMarked, Cloc
 import { useApp } from '../../store/AppContext';
 import { api } from '../../utils/api';
 import { progressStore, recentStore } from '../../utils/storage';
-import { generateThumbnailsBatch } from '../../utils/thumbnails';
+import { getThumbnailUrl, hasThumbnail } from '../../utils/thumbnails';
 import FileCard from './FileCard';
 import FolderLockModal from '../ui/FolderLockModal';
 import ChannelView from '../channels/ChannelView';
@@ -15,7 +15,7 @@ const itemV     = { hidden: { opacity: 0, y: 12 }, show: { opacity: 1, y: 0, tra
 export default function LibraryView({ onSearch }) {
   const { state, actions } = useApp();
   const [progresses, setProgresses]     = useState({});
-  const [thumbnails, setThumbnails]     = useState({});
+
   const [refreshing, setRefreshing]     = useState(false);
   const [thumbLoading, setThumbLoading] = useState(false);
   const [lockModal, setLockModal]       = useState(null);
@@ -35,24 +35,7 @@ export default function LibraryView({ onSearch }) {
     } catch {}
   }
 
-  async function generateThumbs() {
-    const pdfs = state.files.filter(f => f.type === 'pdf' && !thumbnails[f.id]);
-    if (pdfs.length === 0) return;
-    setThumbLoading(true);
-    try {
-      // Generate thumbnails in batches of 6 to avoid overloading
-      const BATCH = 6;
-      for (let i = 0; i < Math.min(pdfs.length, 24); i += BATCH) {
-        const batch = pdfs.slice(i, i + BATCH);
-        const newThumbs = await generateThumbnailsBatch(
-          batch, api.getStreamUrl, api.authHeaders(),
-          () => {}
-        );
-        setThumbnails(prev => ({ ...prev, ...newThumbs }));
-      }
-    } catch {}
-    setThumbLoading(false);
-  }
+
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -219,7 +202,7 @@ export default function LibraryView({ onSearch }) {
                 <FileCard
                   file={file}
                   progress={progresses[file.id]}
-                  thumbnail={thumbnails[file.id]}
+                  thumbnailUrl={hasThumbnail(file.type) ? getThumbnailUrl(file.id) : undefined}
                   onProgressUpdate={loadProgress}
                 />
               </motion.div>
@@ -241,7 +224,7 @@ export default function LibraryView({ onSearch }) {
                   <FileCard
                     file={file}
                     progress={progresses[file.id]}
-                    thumbnail={thumbnails[file.id]}
+                    thumbnailUrl={hasThumbnail(file.type) ? getThumbnailUrl(file.id) : undefined}
                     listMode
                     onProgressUpdate={loadProgress}
                   />
