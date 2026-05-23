@@ -31,17 +31,19 @@ export default function MainApp() {
 
   function loadFromCache() {
     try {
-      const raw = sessionStorage.getItem(CACHE_KEY);
+      const raw = localStorage.getItem(CACHE_KEY);
       if (!raw) return false;
       const { files, folders, assignments, channels, ts } = JSON.parse(raw);
-      // Use cache if less than 10 minutes old
-      if (Date.now() - ts > 10 * 60 * 1000) return false;
+      // Use cache if less than 30 minutes old
+      if (Date.now() - ts > 30 * 60 * 1000) return false;
       if (files?.length) {
         actions.setFiles(files);
         lastCountRef.current = files.length;
         actions.setFolders(folders || []);
         actions.setFileAssignments(assignments || {});
         actions.setChannels(channels || []);
+        // Kick off silent background refresh to get latest data
+        setTimeout(() => loadAll(true), 100);
         return true;
       }
     } catch {}
@@ -50,7 +52,7 @@ export default function MainApp() {
 
   function saveToCache(files, folders, assignments, channels) {
     try {
-      sessionStorage.setItem(CACHE_KEY, JSON.stringify({
+      localStorage.setItem(CACHE_KEY, JSON.stringify({
         files, folders, assignments, channels, ts: Date.now()
       }));
     } catch {}
