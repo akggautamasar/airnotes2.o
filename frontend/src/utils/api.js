@@ -41,6 +41,11 @@ export const api = {
   verifyFolderPassword: (id, hash) => request(`/folders/${encodeURIComponent(id)}/verify-password`, { method: 'POST', body: JSON.stringify({ password_hash: hash }) }),
   getFileAssignments:   () => request('/assignments'),
 
+  getStreamToken:       () => request('/auth/verify').then(() => {
+    const token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token') || '';
+    return token;
+  }),
+
   // Channel registry
   getChannels:          () => request('/channels'),
   registerChannel:      (data) => request('/channels/register', { method: 'POST', body: JSON.stringify(data) }),
