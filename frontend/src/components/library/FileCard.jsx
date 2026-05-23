@@ -50,11 +50,11 @@ export default function FileCard({ file, progress, thumbnailUrl, listMode = fals
 
   async function openFile() {
     if (renaming) return;
-    actions.openFile(file);
     try {
       await recentStore.add(file.id, file.name);
       actions.addRecent({ fileId: file.id, fileName: file.name, openedAt: Date.now() });
     } catch {}
+    setShowPicker(true);
   }
 
   async function assignToFolder(folderId) {
@@ -217,7 +217,7 @@ export default function FileCard({ file, progress, thumbnailUrl, listMode = fals
         style={thumbnailUrl ? {} : { background: `${color}18` }}
       >
         {thumbnailUrl ? (
-          thumbVisible ? <img src={thumbnailUrl} alt="" className="w-full h-full object-cover" /> : <div className="w-full h-full bg-ink-800" />
+          thumbVisible ? <img src={thumbnailUrl} alt="" className="w-full h-full object-cover" onError={e => { e.target.style.display="none"; }} /> : <div className="w-full h-full bg-ink-800" />
         ) : (
           <span className="text-4xl font-bold select-none" style={{ color: `${color}60` }}>
             {initials}
