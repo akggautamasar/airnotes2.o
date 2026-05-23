@@ -182,10 +182,23 @@ def is_epub(mime: str, fname: str) -> bool:
 def is_video(mime: str, fname: str) -> bool:
     return mime in VIDEO_MIMES or Path(fname).suffix.lower() in VIDEO_EXTS
 
+AUDIO_MIMES = {"audio/mpeg","audio/mp3","audio/ogg","audio/flac","audio/wav","audio/aac","audio/m4a","audio/opus","audio/webm","audio/x-m4a"}
+AUDIO_EXTS  = {".mp3",".wav",".flac",".aac",".ogg",".m4a",".opus",".wma"}
+IMAGE_MIMES = {"image/jpeg","image/png","image/gif","image/webp","image/bmp","image/svg+xml"}
+IMAGE_EXTS  = {".jpg",".jpeg",".png",".gif",".webp",".bmp",".svg"}
+
+def is_audio(mime: str, fname: str) -> bool:
+    return mime in AUDIO_MIMES or Path(fname).suffix.lower() in AUDIO_EXTS
+
+def is_image(mime: str, fname: str) -> bool:
+    return mime in IMAGE_MIMES or Path(fname).suffix.lower() in IMAGE_EXTS
+
 def file_type(mime: str, fname: str) -> str:
     if is_pdf(mime, fname):   return "pdf"
     if is_epub(mime, fname):  return "epub"
     if is_video(mime, fname): return "video"
+    if is_audio(mime, fname): return "audio"
+    if is_image(mime, fname): return "image"
     return "other"
 
 # ─── Auth helpers ─────────────────────────────────────────────────────────────
@@ -292,7 +305,7 @@ async def refresh_channel(client, channel_id: int, new_cache: Dict):
             fname = getattr(media, "file_name", "") or f"file_{message.id}"
             ftype = file_type(mime, fname)
             if ftype == "other":
-                continue
+                continue  # skip non-media
             if channel_id == config.STORAGE_CHANNEL:
                 key = f"msg_{message.id}"
             else:
@@ -909,3 +922,338 @@ async def get_all_channels_files(type: str = None, user=Depends(require_auth)):
         files = [f for f in files if f.get("type") == type]
     files.sort(key=lambda f: f["date"], reverse=True)
     return {"files": files, "total": len(files), "channel_count": len(registry)}
+
+# ─── AirPlayer (served as standalone HTML page) ───────────────────────────────
+from fastapi.responses import HTMLResponse
+
+AIRPLAYER_HTML = open(Path(__file__).parent / "airplayer.html").read() if (Path(__file__).parent / "airplayer.html").exists() else ""
+
+@app.get("/airplayer", response_class=HTMLResponse)
+async def airplayer(url: str = "", name: str = "", size: str = ""):
+    """Serve the AirPlayer HTML with the stream URL injected."""
+    html = AIRPLAYER_HTML
+    if not html:
+        return HTMLResponse("<h2>AirPlayer not found. Please add airplayer.html to backend/</h2>", status_code=404)
+    return HTMLResponse(html)
+
+
+# ─── Fast Player Route ────────────────────────────────────────────────────────
+from fastapi.responses import HTMLResponse
+
+FAST_PLAYER_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AirNotes - Fast Player</title>
+    <style>
+        :root {
+            --primary-500: #0ea5e9;
+            --primary-600: #0284c7;
+            --primary-700: #0369a1;
+            --secondary-50: #f8fafc;
+            --secondary-100: #f1f5f9;
+            --secondary-200: #e2e8f0;
+            --secondary-600: #475569;
+            --secondary-700: #334155;
+            --secondary-800: #1e293b;
+            --secondary-900: #0f172a;
+            --success-500: #22c55e;
+            --success-600: #16a34a;
+            --warning-500: #f59e0b;
+            --warning-600: #d97706;
+            --space-2: 0.5rem;
+            --space-3: 0.75rem;
+            --space-4: 1rem;
+            --space-5: 1.25rem;
+            --space-6: 1.5rem;
+            --radius-lg: 0.75rem;
+            --radius-xl: 1rem;
+            --radius-2xl: 1.5rem;
+            --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+            --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+            --shadow-2xl: 0 25px 50px -12px rgb(0 0 0 / 0.25);
+            --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+            --transition-normal: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+        body { background: #000; color: white; overflow: hidden; position: relative; }
+        .fast-player-container { width: 100vw; height: 100vh; position: relative; display: flex; align-items: center; justify-content: center; background: #000; }
+        .video-wrapper { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+        #fast-video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+        .controls-overlay { position: absolute; bottom: 0; left: 0; right: 0; background: linear-gradient(transparent, rgba(0,0,0,0.8)); padding: var(--space-6) var(--space-4) var(--space-4); transform: translateY(100%); transition: transform var(--transition-normal); z-index: 100; }
+        .controls-overlay.show { transform: translateY(0); }
+        .progress-container { margin-bottom: var(--space-4); }
+        .progress-bar { width: 100%; height: 6px; background: rgba(255,255,255,0.3); border-radius: 3px; cursor: pointer; position: relative; }
+        .progress-filled { height: 100%; background: var(--primary-500); border-radius: 3px; width: 0%; transition: width 0.1s ease; }
+        .progress-buffered { position: absolute; top: 0; height: 100%; background: rgba(255,255,255,0.5); border-radius: 3px; width: 0%; }
+        .controls-row { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap; }
+        .control-btn { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: white; padding: var(--space-2); border-radius: var(--radius-lg); cursor: pointer; transition: all var(--transition-fast); display: flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; }
+        .control-btn:hover { background: rgba(255,255,255,0.2); border-color: rgba(255,255,255,0.4); }
+        .control-btn svg { width: 20px; height: 20px; stroke: currentColor; }
+        .play-pause-btn svg { width: 24px; height: 24px; }
+        .time-display { color: white; font-size: 0.9rem; font-weight: 500; white-space: nowrap; }
+        .volume-container { display: flex; align-items: center; gap: var(--space-2); }
+        .volume-slider { width: 80px; height: 4px; background: rgba(255,255,255,0.3); border-radius: 2px; cursor: pointer; position: relative; }
+        .volume-filled { height: 100%; background: white; border-radius: 2px; width: 100%; transition: width 0.1s ease; }
+        .speed-display { color: white; font-size: 0.8rem; font-weight: 600; min-width: 40px; text-align: center; }
+        .top-controls { position: absolute; top: 0; left: 0; right: 0; background: linear-gradient(rgba(0,0,0,0.8), transparent); padding: var(--space-4); transform: translateY(-100%); transition: transform var(--transition-normal); z-index: 100; }
+        .top-controls.show { transform: translateY(0); }
+        .top-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-4); }
+        .player-title { color: white; font-size: 1.1rem; font-weight: 600; display: flex; align-items: center; gap: var(--space-2); }
+        .fast-badge { background: var(--success-500); color: white; padding: 2px 8px; border-radius: var(--radius-lg); font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+        .quality-selector { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: white; padding: var(--space-2) var(--space-3); border-radius: var(--radius-lg); cursor: pointer; font-size: 0.8rem; font-weight: 500; }
+        .center-play { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 80px; height: 80px; background: rgba(0,0,0,0.8); border: 2px solid white; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all var(--transition-fast); z-index: 50; }
+        .center-play:hover { background: rgba(0,0,0,0.9); transform: translate(-50%,-50%) scale(1.1); }
+        .center-play svg { width: 32px; height: 32px; stroke: white; margin-left: 4px; }
+        .center-play.hidden { opacity: 0; pointer-events: none; }
+        .loading-indicator { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 60px; height: 60px; border: 4px solid rgba(255,255,255,0.3); border-top: 4px solid var(--primary-500); border-radius: 50%; animation: spin 1s linear infinite; z-index: 60; }
+        .loading-indicator.hidden { display: none; }
+        @keyframes spin { 0% { transform: translate(-50%,-50%) rotate(0deg); } 100% { transform: translate(-50%,-50%) rotate(360deg); } }
+        .tap-zone { position: absolute; top: 0; bottom: 0; width: 30%; z-index: 40; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+        .tap-zone.left { left: 0; }
+        .tap-zone.right { right: 0; }
+        .tap-feedback { position: absolute; background: rgba(0,0,0,0.8); color: white; padding: var(--space-3) var(--space-4); border-radius: var(--radius-xl); font-weight: 600; font-size: 0.9rem; pointer-events: none; opacity: 0; transform: scale(0.8); transition: all var(--transition-fast); z-index: 70; }
+        .tap-feedback.show { opacity: 1; transform: scale(1); }
+        .pip-indicator { position: absolute; top: var(--space-4); right: var(--space-4); background: rgba(0,0,0,0.8); color: white; padding: var(--space-2) var(--space-3); border-radius: var(--radius-lg); font-size: 0.8rem; font-weight: 600; opacity: 0; transition: opacity var(--transition-fast); z-index: 80; }
+        .pip-indicator.show { opacity: 1; }
+        .fast-player-container.inactive { cursor: none; }
+        .fast-player-container.inactive .controls-overlay { transform: translateY(100%); }
+        .fast-player-container.inactive .top-controls { transform: translateY(-100%); }
+        @media (max-width: 768px) { .controls-row { gap: var(--space-2); } .control-btn { min-width: 40px; min-height: 40px; } .volume-slider { width: 60px; } .time-display { font-size: 0.8rem; } }
+        @media (max-width: 480px) { .volume-container { display: none; } }
+        @keyframes slideUp { from { opacity: 0; transform: translateX(-50%) translateY(20px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+    </style>
+</head>
+<body>
+<div class="fast-player-container" id="playerContainer">
+  <div class="video-wrapper">
+    <video id="fast-video" preload="auto">
+      <source id="video-source" src="" type="video/mp4">
+    </video>
+    <div class="center-play" id="centerPlay">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+    </div>
+    <div class="loading-indicator hidden" id="loadingIndicator"></div>
+    <div class="tap-zone left" id="leftTapZone"></div>
+    <div class="tap-zone right" id="rightTapZone"></div>
+    <div class="tap-feedback" id="tapFeedback"></div>
+    <div class="pip-indicator" id="pipIndicator">Picture-in-Picture</div>
+  </div>
+  <div class="top-controls" id="topControls">
+    <div class="top-row">
+      <div class="player-title">
+        <span id="videoTitle">Loading...</span>
+        <span class="fast-badge">Fast</span>
+      </div>
+      <select class="quality-selector" id="qualitySelector">
+        <option value="auto">Auto Quality</option>
+        <option value="720">720p</option>
+        <option value="480">480p</option>
+        <option value="360">360p</option>
+      </select>
+    </div>
+  </div>
+  <div class="controls-overlay" id="controlsOverlay">
+    <div class="progress-container">
+      <div class="progress-bar" id="progressBar">
+        <div class="progress-buffered" id="progressBuffered"></div>
+        <div class="progress-filled" id="progressFilled"></div>
+      </div>
+    </div>
+    <div class="controls-row">
+      <button class="control-btn play-pause-btn" id="playPauseBtn">
+        <svg id="playIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        <svg id="pauseIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+      </button>
+      <div class="volume-container">
+        <button class="control-btn" id="muteBtn">
+          <svg id="volumeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+          <svg id="muteIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+        </button>
+        <div class="volume-slider" id="volumeSlider"><div class="volume-filled" id="volumeFilled"></div></div>
+      </div>
+      <div class="time-display" id="timeDisplay">0:00 / 0:00</div>
+      <button class="control-btn" id="speedBtn" title="Speed"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg></button>
+      <div class="speed-display" id="speedDisplay">1x</div>
+      <button class="control-btn" id="rewindBtn" title="Rewind 10s"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg></button>
+      <button class="control-btn" id="forwardBtn" title="Forward 10s"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
+      <button class="control-btn" id="pipBtn" title="PiP"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h20v14H2z"/><rect x="14" y="8" width="6" height="4" rx="1"/></svg></button>
+      <button class="control-btn" id="fullscreenBtn" title="Fullscreen">
+        <svg id="fullscreenIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+        <svg id="exitFullscreenIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+<script>
+'use strict';
+const urlParams = new URLSearchParams(window.location.search);
+const videoUrl = urlParams.get('url');
+const videoName = urlParams.get('name') || 'Video';
+const videoId = urlParams.get('id') || videoUrl;
+
+const video = document.getElementById('fast-video');
+const videoSource = document.getElementById('video-source');
+const playerContainer = document.getElementById('playerContainer');
+const controlsOverlay = document.getElementById('controlsOverlay');
+const topControls = document.getElementById('topControls');
+const centerPlay = document.getElementById('centerPlay');
+const loadingIndicator = document.getElementById('loadingIndicator');
+const pipIndicator = document.getElementById('pipIndicator');
+const playPauseBtn = document.getElementById('playPauseBtn');
+const playIcon = document.getElementById('playIcon');
+const pauseIcon = document.getElementById('pauseIcon');
+const muteBtn = document.getElementById('muteBtn');
+const volumeIcon = document.getElementById('volumeIcon');
+const muteIcon = document.getElementById('muteIcon');
+const volumeSlider = document.getElementById('volumeSlider');
+const volumeFilled = document.getElementById('volumeFilled');
+const progressBar = document.getElementById('progressBar');
+const progressFilled = document.getElementById('progressFilled');
+const progressBuffered = document.getElementById('progressBuffered');
+const timeDisplay = document.getElementById('timeDisplay');
+const speedBtn = document.getElementById('speedBtn');
+const speedDisplay = document.getElementById('speedDisplay');
+const rewindBtn = document.getElementById('rewindBtn');
+const forwardBtn = document.getElementById('forwardBtn');
+const pipBtn = document.getElementById('pipBtn');
+const fullscreenBtn = document.getElementById('fullscreenBtn');
+const fullscreenIcon = document.getElementById('fullscreenIcon');
+const exitFullscreenIcon = document.getElementById('exitFullscreenIcon');
+const tapFeedback = document.getElementById('tapFeedback');
+const videoTitle = document.getElementById('videoTitle');
+
+let isPlaying = false, currentSpeed = 1.0, controlsTimeout, lastTapTime = 0, tapCount = 0, isFullscreen = false, savedVolume = 1;
+
+const HISTORY_KEY = 'airnotes_watch_history';
+function getHistory() { try { return JSON.parse(localStorage.getItem(HISTORY_KEY)||'[]'); } catch { return []; } }
+function saveProgress() {
+  if (!video.duration || video.duration < 10) return;
+  const pct = video.currentTime / video.duration;
+  if (pct < 0.02 || pct > 0.97) return;
+  let hist = getHistory().filter(h => h.id !== videoId);
+  hist.unshift({ id: videoId, progress: video.currentTime, duration: video.duration, name: videoName, ts: Date.now() });
+  if (hist.length > 30) hist.pop();
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(hist));
+}
+function getResumePoint() { const item = getHistory().find(h => h.id === videoId); return item ? item.progress : null; }
+function showResumePrompt(resumeAt) {
+  const mins = Math.floor(resumeAt/60), secs = Math.floor(resumeAt%60);
+  const banner = document.createElement('div');
+  banner.style.cssText = 'position:absolute;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(14,165,233,0.95);color:#fff;padding:10px 20px;border-radius:12px;font-size:0.9rem;font-weight:600;display:flex;gap:12px;align-items:center;z-index:200;box-shadow:0 4px 20px rgba(0,0,0,0.4);animation:slideUp 0.3s ease;';
+  banner.innerHTML = `<span>▶ Resume from ${mins}:${String(secs).padStart(2,'0')}?</span><button onclick="video.currentTime=${resumeAt};this.parentElement.remove();" style="background:#fff;color:#0ea5e9;border:none;padding:4px 12px;border-radius:8px;cursor:pointer;font-weight:700;">Resume</button><button onclick="this.parentElement.remove();" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:4px 10px;border-radius:8px;cursor:pointer;">Start over</button>`;
+  playerContainer.appendChild(banner);
+  setTimeout(() => banner.remove(), 8000);
+}
+
+function initPlayer() {
+  if (!videoUrl) { alert('No video URL provided'); return; }
+  videoTitle.textContent = videoName.replace(/\.[^.]+$/, '');
+  document.title = videoName + ' — AirNotes Fast Player';
+  videoSource.src = videoUrl;
+  video.load();
+  showLoading();
+  video.addEventListener('loadstart', showLoading);
+  video.addEventListener('canplay', hideLoading);
+  video.addEventListener('waiting', showLoading);
+  video.addEventListener('playing', hideLoading);
+  video.addEventListener('timeupdate', updateProgress);
+  video.addEventListener('progress', updateBuffered);
+  video.addEventListener('ended', onVideoEnded);
+  video.addEventListener('loadedmetadata', () => {
+    updateTimeDisplay();
+    const resumeAt = getResumePoint();
+    if (resumeAt && resumeAt > 5) showResumePrompt(resumeAt);
+  });
+  playPauseBtn.addEventListener('click', togglePlayPause);
+  centerPlay.addEventListener('click', togglePlayPause);
+  muteBtn.addEventListener('click', toggleMute);
+  speedBtn.addEventListener('click', cycleSpeed);
+  rewindBtn.addEventListener('click', () => seek(-10));
+  forwardBtn.addEventListener('click', () => seek(10));
+  pipBtn.addEventListener('click', togglePiP);
+  fullscreenBtn.addEventListener('click', toggleFullscreen);
+  progressBar.addEventListener('click', onProgressClick);
+  volumeSlider.addEventListener('click', onVolumeClick);
+  document.getElementById('leftTapZone').addEventListener('click', handleLeftTap);
+  document.getElementById('rightTapZone').addEventListener('click', handleRightTap);
+  playerContainer.addEventListener('mousemove', showControls);
+  playerContainer.addEventListener('touchstart', showControls);
+  playerContainer.addEventListener('click', showControls);
+  document.addEventListener('keydown', handleKeyboard);
+  document.addEventListener('fullscreenchange', onFullscreenChange);
+  video.addEventListener('enterpictureinpicture', () => pipIndicator.classList.add('show'));
+  video.addEventListener('leavepictureinpicture', () => pipIndicator.classList.remove('show'));
+  video.addEventListener('volumechange', () => { volumeFilled.style.width = (video.muted ? 0 : video.volume) * 100 + '%'; });
+  showControls();
+  const savedSpeed = localStorage.getItem('airnotes_speed');
+  if (savedSpeed) { currentSpeed = parseFloat(savedSpeed); video.playbackRate = currentSpeed; speedDisplay.textContent = currentSpeed + 'x'; }
+  setInterval(saveProgress, 5000);
+  window.addEventListener('beforeunload', saveProgress);
+}
+
+function showLoading() { loadingIndicator.classList.remove('hidden'); centerPlay.classList.add('hidden'); }
+function hideLoading() { loadingIndicator.classList.add('hidden'); if (!isPlaying) centerPlay.classList.remove('hidden'); }
+function togglePlayPause() {
+  if (video.paused) { video.play(); isPlaying = true; playIcon.style.display='none'; pauseIcon.style.display='block'; centerPlay.classList.add('hidden'); }
+  else { video.pause(); isPlaying = false; playIcon.style.display='block'; pauseIcon.style.display='none'; centerPlay.classList.remove('hidden'); }
+}
+function toggleMute() {
+  if (video.muted) { video.muted=false; video.volume=savedVolume; volumeIcon.style.display='block'; muteIcon.style.display='none'; }
+  else { savedVolume=video.volume; video.muted=true; volumeIcon.style.display='none'; muteIcon.style.display='block'; }
+}
+function cycleSpeed() {
+  const speeds = [0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.5,3];
+  const idx = speeds.indexOf(currentSpeed);
+  currentSpeed = speeds[(idx+1) % speeds.length];
+  video.playbackRate = currentSpeed;
+  speedDisplay.textContent = currentSpeed + 'x';
+  localStorage.setItem('airnotes_speed', currentSpeed.toString());
+  showFeedback(currentSpeed + 'x');
+}
+function seek(s) { video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime+s)); showFeedback(s>0?'+'+s+'s':s+'s'); }
+function togglePiP() { if (document.pictureInPictureElement) document.exitPictureInPicture(); else if (document.pictureInPictureEnabled) video.requestPictureInPicture(); }
+function toggleFullscreen() {
+  if (!isFullscreen) { (playerContainer.requestFullscreen||playerContainer.webkitRequestFullscreen)?.call(playerContainer); }
+  else { (document.exitFullscreen||document.webkitExitFullscreen)?.call(document); }
+}
+function onFullscreenChange() {
+  isFullscreen = !!(document.fullscreenElement||document.webkitFullscreenElement);
+  fullscreenIcon.style.display = isFullscreen ? 'none' : 'block';
+  exitFullscreenIcon.style.display = isFullscreen ? 'block' : 'none';
+}
+function handleLeftTap() { const now=Date.now(); if (now-lastTapTime<300) { if (++tapCount>=2) { seek(-10); tapCount=0; } } else { tapCount=1; } lastTapTime=now; }
+function handleRightTap() { const now=Date.now(); if (now-lastTapTime<300) { if (++tapCount>=2) { seek(10); tapCount=0; } } else { tapCount=1; } lastTapTime=now; }
+function showFeedback(text) { tapFeedback.textContent=text; tapFeedback.style.top='50%'; tapFeedback.style.left='50%'; tapFeedback.style.transform='translate(-50%,-50%)'; tapFeedback.classList.add('show'); setTimeout(()=>tapFeedback.classList.remove('show'),1000); }
+function onProgressClick(e) { const r=progressBar.getBoundingClientRect(); video.currentTime=((e.clientX-r.left)/r.width)*video.duration; }
+function onVolumeClick(e) { const r=volumeSlider.getBoundingClientRect(); video.volume=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)); video.muted=false; }
+function updateProgress() { if(video.duration){const p=(video.currentTime/video.duration)*100; progressFilled.style.width=p+'%'; updateTimeDisplay();} }
+function updateBuffered() { if(video.buffered.length>0&&video.duration){progressBuffered.style.width=(video.buffered.end(video.buffered.length-1)/video.duration)*100+'%';} }
+function updateTimeDisplay() { timeDisplay.textContent=fmt(video.currentTime)+' / '+fmt(video.duration); }
+function fmt(s) { if(isNaN(s))return'0:00'; const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=Math.floor(s%60); return h>0?h+':'+String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0'):m+':'+String(sec).padStart(2,'0'); }
+function showControls() { controlsOverlay.classList.add('show'); topControls.classList.add('show'); playerContainer.classList.remove('inactive'); clearTimeout(controlsTimeout); if(isPlaying) controlsTimeout=setTimeout(()=>{controlsOverlay.classList.remove('show');topControls.classList.remove('show');playerContainer.classList.add('inactive');},3000); }
+function onVideoEnded() { isPlaying=false; playIcon.style.display='block'; pauseIcon.style.display='none'; centerPlay.classList.remove('hidden'); showControls(); }
+function handleKeyboard(e) {
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT') return;
+  switch(e.code){
+    case 'Space': case 'KeyK': e.preventDefault(); togglePlayPause(); break;
+    case 'ArrowLeft': e.preventDefault(); seek(-10); break;
+    case 'ArrowRight': e.preventDefault(); seek(10); break;
+    case 'ArrowUp': e.preventDefault(); video.volume=Math.min(1,video.volume+0.1); break;
+    case 'ArrowDown': e.preventDefault(); video.volume=Math.max(0,video.volume-0.1); break;
+    case 'KeyM': toggleMute(); break;
+    case 'KeyF': toggleFullscreen(); break;
+    case 'KeyP': togglePiP(); break;
+    case 'Comma': cycleSpeed(); break;
+  }
+}
+document.addEventListener('DOMContentLoaded', initPlayer);
+</script>
+</body>
+</html>"""
+
+@app.get("/player", response_class=HTMLResponse)
+async def fast_player(url: str = "", name: str = "", id: str = ""):
+    """Serve the Fast Player page."""
+    return HTMLResponse(content=FAST_PLAYER_HTML)

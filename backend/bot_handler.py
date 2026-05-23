@@ -476,6 +476,8 @@ def setup_bot_handlers(client, file_cache: dict, folder_db: dict, save_fn):
 
     # Register channel-level commands
     _register_channel_commands(client, admin_ids, file_cache, folder_db, save_fn)
+    # Register instant channel post handler
+    _register_channel_post_handler(client, file_cache, folder_db, save_fn)
 
 
 # ─── Bulk import worker ───────────────────────────────────────────────────────
@@ -662,3 +664,71 @@ def _register_channel_commands(client, admin_ids, file_cache, folder_db, save_fn
         )
 
     logger.info("Channel commands registered (/setup_channel, /channel_info)")
+
+
+# ─── Instant channel post handler (appended) ─────────────────────────────────
+
+def _register_channel_post_handler(client, file_cache, folder_db, save_fn):
+    """Watch registered channels for new media posts and add them instantly."""
+    from pyrogram import filters as _f
+    from main import file_type, notify_new_file
+    import config as cfg
+    from datetime import datetime
+
+    @client.on_message(_f.channel & (_f.document | _f.video | _f.audio | _f.photo))
+    async def on_channel_post(c, m):
+        chat = m.chat
+        channel_id = chat.id
+        registry = folder_db.get("channel_registry", {})
+        config_channels = set(cfg.STORAGE_CHANNELS if cfg.STORAGE_CHANNELS else [cfg.STORAGE_CHANNEL])
+        registered_ids = {v.get("id") or int(k) for k, v in registry.items()} | config_channels
+
+        if channel_id not in registered_ids:
+            return  # not a registered channel
+
+        media = getattr(m, "document", None) or getattr(m, "video", None) or getattr(m, "audio", None)
+        if not media and m.photo:
+            # Handle photo
+            photo = m.photo
+            key = f"ch{abs(channel_id)}_msg_{m.id}" if channel_id != cfg.STORAGE_CHANNEL else f"msg_{m.id}"
+            channel_name = registry.get(str(channel_id), {}).get("name") or getattr(chat, "title", str(channel_id))
+            entry = {
+                "id": key, "message_id": m.id, "channel_id": channel_id,
+                "channel_name": channel_name,
+                "name": f"photo_{m.id}.jpg",
+                "size": getattr(photo, "file_size", 0),
+                "date": m.date.timestamp() if m.date else datetime.utcnow().timestamp(),
+                "caption": m.caption or "", "type": "image", "mime": "image/jpeg",
+            }
+            file_cache[key] = entry
+            notify_new_file(entry)
+            save_fn()
+            return
+
+        if not media:
+            return
+
+        mime = getattr(media, "mime_type", "") or ""
+        fname = getattr(media, "file_name", "") or f"file_{m.id}"
+        ftype = file_type(mime, fname)
+        if ftype == "other":
+            return
+
+        key = f"ch{abs(channel_id)}_msg_{m.id}" if channel_id != cfg.STORAGE_CHANNEL else f"msg_{m.id}"
+        if key in file_cache:
+            return  # already indexed
+
+        channel_name = registry.get(str(channel_id), {}).get("name") or getattr(chat, "title", str(channel_id))
+        entry = {
+            "id": key, "message_id": m.id, "channel_id": channel_id,
+            "channel_name": channel_name,
+            "name": fname, "size": getattr(media, "file_size", 0),
+            "date": m.date.timestamp() if m.date else datetime.utcnow().timestamp(),
+            "caption": m.caption or "", "type": ftype, "mime": mime,
+        }
+        file_cache[key] = entry
+        notify_new_file(entry)
+        save_fn()
+        logger.info(f"Instant index: {fname} from channel {channel_name} ({channel_id})")
+
+    logger.info("Channel post handler registered (instant indexing active)")
