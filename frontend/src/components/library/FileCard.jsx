@@ -7,7 +7,7 @@ import { api } from '../../utils/api';
 import { progressStore, recentStore } from '../../utils/storage';
 import { formatSize, formatRelativeDate, cleanFileName, getInitials, stringToColor } from '../../utils/format';
 
-export default function FileCard({ file, progress, thumbnail, listMode = false, onProgressUpdate }) {
+export default function FileCard({ file, progress, thumbnailUrl, listMode = false, onProgressUpdate }) {
   const { state, actions } = useApp();
   const [showMenu, setShowMenu] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -120,8 +120,8 @@ export default function FileCard({ file, progress, thumbnail, listMode = false, 
           className="w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs font-bold shrink-0"
           style={{ background: color }}
         >
-          {thumbnail
-            ? <img src={thumbnail} alt="" className="w-full h-full object-cover rounded-lg" />
+          {thumbnailUrl
+            ? <img src={thumbnailUrl} loading="lazy" alt="" className="w-full h-full object-cover rounded-lg" />
             : initials}
         </div>
 
@@ -208,10 +208,10 @@ export default function FileCard({ file, progress, thumbnail, listMode = false, 
       {/* Thumbnail / Avatar area */}
       <div
         className="h-28 flex items-center justify-center relative overflow-hidden"
-        style={thumbnail ? {} : { background: `${color}18` }}
+        style={thumbnailUrl ? {} : { background: `${color}18` }}
       >
-        {thumbnail ? (
-          <img src={thumbnail} alt="" className="w-full h-full object-cover" />
+        {thumbnailUrl ? (
+          <img src={thumbnailUrl} loading="lazy" alt="" className="w-full h-full object-cover" />
         ) : (
           <span className="text-4xl font-bold select-none" style={{ color: `${color}60` }}>
             {initials}
@@ -284,6 +284,7 @@ export default function FileCard({ file, progress, thumbnail, listMode = false, 
         )}
       </div>
     </motion.div>
+    </>
   );
 }
 
@@ -318,6 +319,5 @@ function ContextMenu({ file, title, currentFolder, availableFolders, busy, onAss
         </button>
       </div>
     </div>
-    </>
   );
 }
