@@ -1287,6 +1287,14 @@ async def get_thumbnail(file_id: str, user=Depends(require_auth)):
     if ftype not in ("pdf", "epub", "video"):
         raise HTTPException(status_code=400, detail="No thumbnail for this file type")
 
+    # Quick reject: if mime type is clearly not a real PDF/EPUB/video, fail fast
+    mime = info.get("mime", "")
+    fname = info.get("name", "").lower()
+    if ftype == "pdf" and mime and mime not in ("application/pdf", "application/octet-stream", ""):
+        folder_db.setdefault("thumbnails", {})[file_id] = "__failed__"
+        _save_folders()
+        raise HTTPException(status_code=422, detail="Not a valid PDF")
+
     channel_id = info.get("channel_id", config.STORAGE_CHANNEL)
     client = get_client()
 
@@ -1309,6 +1317,12 @@ async def get_thumbnail(file_id: str, user=Depends(require_auth)):
             if total >= LIMIT:
                 break
         raw = b"".join(chunks)[:LIMIT]
+
+        # Reject non-PDF files masquerading as PDFs (HTML, ZIP, etc.)
+        if ftype == "pdf" and not (raw[:4] == b'%PDF' or raw[:4] == b'%PDF'):
+            folder_db.setdefault("thumbnails", {})[file_id] = "__failed__"
+            _save_folders()
+            raise HTTPException(status_code=422, detail="File is not a valid PDF")
 
         thumb_data = None
 
@@ -1416,13 +1430,12 @@ async def get_thumbnail(file_id: str, user=Depends(require_auth)):
         if not thumb_data:
             # Cache a sentinel so we don't retry on every page load
             folder_db.setdefault("thumbnails", {})[file_id] = "__failed__"
-            _save_folders()
+            _save_folders()  # disk only
             raise HTTPException(status_code=422, detail="Could not generate thumbnail")
 
-        # Cache it permanently
+        # Cache it permanently — save to disk only, backup happens on next scheduled interval
         folder_db.setdefault("thumbnails", {})[file_id] = base64.b64encode(thumb_data).decode()
-        _save_folders()  # save to disk immediately; backup will happen on next scheduled save
-        asyncio.create_task(_backup_to_telegram())
+        _save_folders()  # disk only — no Telegram backup per thumbnail
 
         return _Response(content=thumb_data, media_type="image/jpeg",
                         headers={"Cache-Control": "public, max-age=31536000"})
