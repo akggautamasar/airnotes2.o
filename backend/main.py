@@ -36,6 +36,7 @@ folder_db: Dict = {
     "file_assignments": {},
     "channel_registry": {},
     "file_cache_data": {},   # ← persisted file index (like drive.data)
+    "thumbnails": {},        # ← persistent cover image cache
 }
 
 # ─── Save to disk ─────────────────────────────────────────────────────────────
@@ -113,6 +114,7 @@ async def _restore_from_telegram():
             folder_db.setdefault("folders", {})
             folder_db.setdefault("file_assignments", {})
             folder_db.setdefault("file_cache_data", {})
+            folder_db.setdefault("thumbnails", {})
 
             # Restore file_cache from persisted data — instant, no Telegram scan needed
             restored = folder_db.get("file_cache_data", {})
@@ -141,6 +143,7 @@ def _load_folders():
             folder_db.setdefault("folders", {})
             folder_db.setdefault("file_assignments", {})
             folder_db.setdefault("file_cache_data", {})
+            folder_db.setdefault("thumbnails", {})
             # Restore file cache from disk
             restored = folder_db.get("file_cache_data", {})
             file_cache.clear()
@@ -1257,3 +1260,173 @@ document.addEventListener('DOMContentLoaded', initPlayer);
 async def fast_player(url: str = "", name: str = "", id: str = ""):
     """Serve the Fast Player page."""
     return HTMLResponse(content=FAST_PLAYER_HTML)
+
+
+# ─── Thumbnail endpoint ───────────────────────────────────────────────────────
+from fastapi.responses import Response as _Response
+
+@app.get("/api/files/{file_id}/thumbnail")
+async def get_thumbnail(file_id: str, user=Depends(require_auth)):
+    """
+    Return a JPEG cover image for a PDF, EPUB, or video file.
+    Generated once and cached permanently in folder_db["thumbnails"].
+    """
+    import base64, io, asyncio, tempfile, os
+
+    # Serve from cache if available
+    cached = folder_db.get("thumbnails", {}).get(file_id)
+    if cached:
+        data = base64.b64decode(cached)
+        return _Response(content=data, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=31536000"})
+
+    if file_id not in file_cache:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    info = file_cache[file_id]
+    ftype = info.get("type")
+    if ftype not in ("pdf", "epub", "video"):
+        raise HTTPException(status_code=400, detail="No thumbnail for this file type")
+
+    channel_id = info.get("channel_id", config.STORAGE_CHANNEL)
+    client = get_client()
+
+    try:
+        # Download first 512KB to a temp file
+        from utils.streamer.custom_dl import ByteStreamer
+        from utils.streamer import class_cache
+
+        if client not in class_cache:
+            class_cache[client] = ByteStreamer(client)
+        streamer = class_cache[client]
+        file_props = await streamer.get_file_properties(channel_id, info["message_id"])
+
+        chunks = []
+        total = 0
+        LIMIT = 512 * 1024  # 512KB is enough for PDF page 1
+        async for chunk in client.stream_media(file_props.file_id, offset=0, limit=99999):
+            chunks.append(chunk)
+            total += len(chunk)
+            if total >= LIMIT:
+                break
+        raw = b"".join(chunks)[:LIMIT]
+
+        thumb_data = None
+
+        if ftype == "pdf":
+            # Use pypdf to get page count, then render with pdf2image or fallback to pypdf
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+                f.write(raw)
+                tmp_path = f.name
+            try:
+                # Try pdf2image first (best quality)
+                from pdf2image import convert_from_path
+                pages = convert_from_path(tmp_path, first_page=1, last_page=1,
+                                         dpi=150, size=(400, None))
+                if pages:
+                    buf = io.BytesIO()
+                    pages[0].convert("RGB").save(buf, "JPEG", quality=85)
+                    thumb_data = buf.getvalue()
+            except ImportError:
+                pass
+            except Exception as e:
+                logger.warning(f"pdf2image failed for {file_id}: {e}")
+
+            if not thumb_data:
+                # Fallback: use pypdf + reportlab to render
+                try:
+                    import pypdf
+                    from PIL import Image as PILImage
+                    reader = pypdf.PdfReader(io.BytesIO(raw))
+                    # Extract images from first page
+                    page = reader.pages[0]
+                    images = list(page.images) if hasattr(page, 'images') else []
+                    if images:
+                        img_data = images[0].data
+                        img = PILImage.open(io.BytesIO(img_data)).convert("RGB")
+                        img.thumbnail((400, 600))
+                        buf = io.BytesIO()
+                        img.save(buf, "JPEG", quality=85)
+                        thumb_data = buf.getvalue()
+                except Exception as e:
+                    logger.warning(f"pypdf image extract failed for {file_id}: {e}")
+
+            if not thumb_data:
+                # Last resort: ffmpeg can render PDF page 1
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        "ffmpeg", "-y", "-i", tmp_path,
+                        "-vframes", "1", "-vf", "scale=400:-1",
+                        "-f", "image2", "pipe:1",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+                    if stdout:
+                        thumb_data = stdout
+                except Exception as e:
+                    logger.warning(f"ffmpeg PDF thumb failed for {file_id}: {e}")
+
+            try: os.unlink(tmp_path)
+            except: pass
+
+        elif ftype == "video":
+            # Use ffmpeg to extract frame at 10s (or 5% into video)
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+                f.write(raw)
+                tmp_path = f.name
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-y", "-ss", "5", "-i", tmp_path,
+                    "-vframes", "1", "-vf", "scale=400:-1",
+                    "-f", "image2", "pipe:1",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+                if stdout:
+                    thumb_data = stdout
+            except Exception as e:
+                logger.warning(f"ffmpeg video thumb failed for {file_id}: {e}")
+            finally:
+                try: os.unlink(tmp_path)
+                except: pass
+
+        elif ftype == "epub":
+            # Extract cover from EPUB zip
+            import zipfile
+            try:
+                zf = zipfile.ZipFile(io.BytesIO(raw))
+                # Find cover image
+                cover_names = [n for n in zf.namelist()
+                               if any(x in n.lower() for x in ("cover", "title", "front"))
+                               and n.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp"))]
+                if not cover_names:
+                    cover_names = [n for n in zf.namelist()
+                                   if n.lower().endswith((".jpg", ".jpeg", ".png"))]
+                if cover_names:
+                    from PIL import Image as PILImage
+                    img = PILImage.open(io.BytesIO(zf.read(cover_names[0]))).convert("RGB")
+                    img.thumbnail((400, 600))
+                    buf = io.BytesIO()
+                    img.save(buf, "JPEG", quality=85)
+                    thumb_data = buf.getvalue()
+            except Exception as e:
+                logger.warning(f"EPUB cover extract failed for {file_id}: {e}")
+
+        if not thumb_data:
+            raise HTTPException(status_code=422, detail="Could not generate thumbnail")
+
+        # Cache it permanently
+        folder_db.setdefault("thumbnails", {})[file_id] = base64.b64encode(thumb_data).decode()
+        _save_folders()  # save to disk immediately; backup will happen on next scheduled save
+        asyncio.create_task(_backup_to_telegram())
+
+        return _Response(content=thumb_data, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=31536000"})
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Thumbnail generation failed for {file_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

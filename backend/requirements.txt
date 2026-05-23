@@ -8,3 +8,6 @@ aiohttp
 dill
 PyJWT
 httpx
+Pillow
+pdf2image
+pypdf
