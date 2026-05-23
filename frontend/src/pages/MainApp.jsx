@@ -21,13 +21,84 @@ export default function MainApp() {
 
   useEffect(() => {
     api.verify().catch(() => actions.logout());
-    loadAll();
+    loadAll(false);
     connectSSE();
     return () => { sseRef.current?.close(); clearTimeout(retryRef.current); };
   }, []);
 
-  async function loadAll() {
-    actions.setFilesLoading(true);
+  // ── Cache keys ──────────────────────────────────────────────────────────────
+  const CACHE_KEY = 'airnotes_cache_v2';
+
+  function loadFromCache() {
+    try {
+      const raw = sessionStorage.getItem(CACHE_KEY);
+      if (!raw) return false;
+      const { files, folders, assignments, channels, ts } = JSON.parse(raw);
+      // Use cache if less than 10 minutes old
+      if (Date.now() - ts > 10 * 60 * 1000) return false;
+      if (files?.length) {
+        actions.setFiles(files);
+        lastCountRef.current = files.length;
+        actions.setFolders(folders || []);
+        actions.setFileAssignments(assignments || {});
+        actions.setChannels(channels || []);
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  function saveToCache(files, folders, assignments, channels) {
+    try {
+      sessionStorage.setItem(CACHE_KEY, JSON.stringify({
+        files, folders, assignments, channels, ts: Date.now()
+      }));
+    } catch {}
+  }
+
+  async function loadAll(background = false) {
+    // Show cached data instantly, then refresh in background
+    if (!background) {
+      const hasCached = loadFromCache();
+      if (!hasCached) {
+        actions.setFilesLoading(true);
+        // Safety timeout — never stay loading more than 8 seconds
+        const timeout = setTimeout(() => actions.setFilesLoading(false), 8000);
+        try {
+          const [filesRes, foldersRes, assignmentsRes, channelsRes] = await Promise.all([
+            api.getFiles(),
+            api.getFolders(),
+            api.getFileAssignments(),
+            api.getChannels(),
+          ]);
+          clearTimeout(timeout);
+          const files = filesRes.files || [];
+          const folders = (foldersRes.folders || []).map(f => ({
+            id: f.id, name: f.name, parentId: f.parent_id,
+            locked: f.locked || false, passwordHash: f.password_hash || null,
+            createdAt: f.created_at, fileCount: f.file_count || 0,
+          }));
+          const assignments = assignmentsRes.assignments || {};
+          const channels = channelsRes.channels || [];
+          actions.setFiles(files);
+          lastCountRef.current = files.length;
+          actions.setFolders(folders);
+          actions.setFileAssignments(assignments);
+          actions.setChannels(channels);
+          saveToCache(files, folders, assignments, channels);
+        } catch (e) {
+          clearTimeout(timeout);
+          actions.setFilesError(e.message);
+        }
+        try {
+          const allProgress = await progressStore.getAll();
+          allProgress.forEach(p => actions.saveProgress(p.fileId, p));
+          const recent = await recentStore.getAll();
+          actions.setRecent(recent);
+        } catch {}
+        return;
+      }
+    }
     try {
       const [filesRes, foldersRes, assignmentsRes, channelsRes] = await Promise.all([
         api.getFiles(),
@@ -35,19 +106,23 @@ export default function MainApp() {
         api.getFileAssignments(),
         api.getChannels(),
       ]);
-      actions.setFiles(filesRes.files || []);
-      lastCountRef.current = (filesRes.files || []).length;
-
+      const files = filesRes.files || [];
       const folders = (foldersRes.folders || []).map(f => ({
         id: f.id, name: f.name, parentId: f.parent_id,
         locked: f.locked || false, passwordHash: f.password_hash || null,
         createdAt: f.created_at, fileCount: f.file_count || 0,
       }));
+      const assignments = assignmentsRes.assignments || {};
+      const channels = channelsRes.channels || [];
+
+      actions.setFiles(files);
+      lastCountRef.current = files.length;
       actions.setFolders(folders);
-      actions.setFileAssignments(assignmentsRes.assignments || {});
-      actions.setChannels(channelsRes.channels || []);
+      actions.setFileAssignments(assignments);
+      actions.setChannels(channels);
+      saveToCache(files, folders, assignments, channels);
     } catch (e) {
-      actions.setFilesError(e.message);
+      if (!background) actions.setFilesError(e.message);
     }
     // Load local progress + recent
     try {
@@ -129,7 +204,7 @@ export default function MainApp() {
                        ${mobileSidebar ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
         <Sidebar
           onSearch={() => { setShowSearch(true); setMobileSidebar(false); }}
-          onRefresh={loadAll}
+          onRefresh={() => loadAll(false)}
         />
       </div>
 
