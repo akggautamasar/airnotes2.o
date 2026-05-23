@@ -1267,10 +1267,7 @@ from fastapi.responses import Response as _Response
 
 @app.get("/api/files/{file_id}/thumbnail")
 async def get_thumbnail(file_id: str, user=Depends(require_auth)):
-    """
-    Return a JPEG cover image for a PDF, EPUB, or video file.
-    Generated once and cached permanently in folder_db["thumbnails"].
-    """
+    """Return a JPEG cover for PDF/EPUB/video. Generated once, cached permanently."""
     import base64, io, asyncio, tempfile, os
 
     # Serve from cache if available
