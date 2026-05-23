@@ -387,6 +387,126 @@ async def _periodic_refresh():
         await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
         await refresh_file_cache()
 
+async def _background_thumbnail_worker():
+    """Slowly generate thumbnails in background — 1 every 8 seconds.
+    Never blocks the main server. Files with cached thumbnails are skipped.
+    This means thumbnails build up gradually without hammering Telegram.
+    """
+    await asyncio.sleep(120)  # wait 2 min after startup before starting
+    while True:
+        try:
+            thumbs = folder_db.get("thumbnails", {})
+            # Find files that don't have thumbnails yet
+            pending = [
+                (fid, f) for fid, f in file_cache.items()
+                if f.get("type") in ("pdf", "epub", "video")
+                and fid not in thumbs
+            ]
+            if pending:
+                # Process one file
+                fid, finfo = pending[0]
+                try:
+                    await _generate_thumbnail_internal(fid, finfo)
+                except Exception as e:
+                    logger.debug(f"Background thumb failed for {fid}: {e}")
+                    # Mark as failed so we skip next time
+                    folder_db.setdefault("thumbnails", {})[fid] = "__failed__"
+                    _save_folders()
+                await asyncio.sleep(8)  # 8 seconds between each thumbnail
+            else:
+                await asyncio.sleep(60)  # all done, check again in 1 min
+        except Exception as e:
+            logger.error(f"Thumbnail worker error: {e}")
+            await asyncio.sleep(30)
+
+async def _generate_thumbnail_internal(file_id: str, info: dict):
+    """Internal thumbnail generation — same logic as the endpoint but no HTTP response."""
+    import base64, io, asyncio as _asyncio, tempfile, os
+    ftype = info.get("type")
+    mime = info.get("mime", "")
+
+    # Quick reject non-PDF files
+    if ftype == "pdf" and mime and mime not in ("application/pdf", "application/octet-stream", ""):
+        folder_db.setdefault("thumbnails", {})[file_id] = "__failed__"
+        _save_folders()
+        return
+
+    channel_id = info.get("channel_id", config.STORAGE_CHANNEL)
+    client = get_client()
+    from utils.streamer.custom_dl import ByteStreamer
+    from utils.streamer import class_cache
+    if client not in class_cache:
+        class_cache[client] = ByteStreamer(client)
+    streamer = class_cache[client]
+    file_props = await streamer.get_file_properties(channel_id, info["message_id"])
+
+    chunks = []
+    total = 0
+    LIMIT = 5 * 1024 * 1024
+    async for chunk in client.stream_media(file_props.file_id, offset=0, limit=99999):
+        chunks.append(chunk)
+        total += len(chunk)
+        if total >= LIMIT:
+            break
+    raw = b"".join(chunks)[:LIMIT]
+
+    # Reject fake PDFs
+    if ftype == "pdf" and not (raw[:4] == b'%PDF' or raw[:4] == b'\x25\x50\x44\x46'):
+        folder_db.setdefault("thumbnails", {})[file_id] = "__failed__"
+        _save_folders()
+        return
+
+    thumb_data = None
+    if ftype == "pdf":
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(raw); tmp_path = f.name
+        try:
+            from pdf2image import convert_from_path
+            pages = convert_from_path(tmp_path, first_page=1, last_page=1, dpi=120, size=(300, None))
+            if pages:
+                buf = io.BytesIO()
+                pages[0].convert("RGB").save(buf, "JPEG", quality=75)
+                thumb_data = buf.getvalue()
+        except Exception: pass
+        try: os.unlink(tmp_path)
+        except: pass
+    elif ftype == "video":
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+            f.write(raw); tmp_path = f.name
+        try:
+            proc = await _asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-ss", "5", "-i", tmp_path,
+                "-vframes", "1", "-vf", "scale=300:-1", "-f", "image2", "pipe:1",
+                stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.DEVNULL)
+            stdout, _ = await _asyncio.wait_for(proc.communicate(), timeout=15)
+            if stdout: thumb_data = stdout
+        except Exception: pass
+        try: os.unlink(tmp_path)
+        except: pass
+    elif ftype == "epub":
+        import zipfile
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(raw))
+            cover_names = [n for n in zf.namelist()
+                          if any(x in n.lower() for x in ("cover","title","front"))
+                          and n.lower().endswith((".jpg",".jpeg",".png"))]
+            if not cover_names:
+                cover_names = [n for n in zf.namelist() if n.lower().endswith((".jpg",".jpeg",".png"))]
+            if cover_names:
+                from PIL import Image as PILImage
+                img = PILImage.open(io.BytesIO(zf.read(cover_names[0]))).convert("RGB")
+                img.thumbnail((300, 450))
+                buf = io.BytesIO()
+                img.save(buf, "JPEG", quality=75)
+                thumb_data = buf.getvalue()
+        except Exception: pass
+
+    if thumb_data:
+        folder_db.setdefault("thumbnails", {})[file_id] = base64.b64encode(thumb_data).decode()
+    else:
+        folder_db.setdefault("thumbnails", {})[file_id] = "__failed__"
+    _save_folders()
+
 # ─── App lifecycle ────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -406,6 +526,7 @@ async def lifespan(app: FastAPI):
     # Always do a background scan to pick up any new files since last backup
     asyncio.create_task(refresh_file_cache())
     asyncio.create_task(_periodic_refresh())
+    asyncio.create_task(_background_thumbnail_worker())
 
     try:
         from bot_handler import setup_bot_handlers
@@ -940,6 +1061,13 @@ async def airplayer(url: str = "", name: str = "", size: str = ""):
     return HTMLResponse(html)
 
 
+@app.get("/api/thumbnails/ready")
+async def get_ready_thumbnails(user=Depends(require_auth)):
+    """Return set of file IDs that have cached thumbnails ready to serve."""
+    thumbs = folder_db.get("thumbnails", {})
+    ready = [fid for fid, v in thumbs.items() if v and v != "__failed__"]
+    return {"ready": ready}
+
 # ─── Fast Player Route ────────────────────────────────────────────────────────
 from fastapi.responses import HTMLResponse
 
@@ -1267,17 +1395,22 @@ from fastapi.responses import Response as _Response
 
 @app.get("/api/files/{file_id}/thumbnail")
 async def get_thumbnail(file_id: str, user=Depends(require_auth)):
-    """Return a JPEG cover for PDF/EPUB/video. Generated once, cached permanently."""
-    import base64, io, asyncio, tempfile, os
-
-    # Serve from cache if available
+    """Serve thumbnail from cache only. Background worker generates thumbnails."""
+    import base64
     cached = folder_db.get("thumbnails", {}).get(file_id)
     if cached == "__failed__":
-        raise HTTPException(status_code=422, detail="Thumbnail not available for this file")
+        raise HTTPException(status_code=422, detail="Thumbnail not available")
     if cached:
         data = base64.b64decode(cached)
         return _Response(content=data, media_type="image/jpeg",
                         headers={"Cache-Control": "public, max-age=31536000"})
+    # Not ready yet — background worker will generate it
+    raise HTTPException(status_code=404, detail="Thumbnail not ready yet")
+
+    # ── Legacy on-demand generation (disabled — use background worker) ──
+    import base64, io, asyncio, tempfile, os
+    if False:
+        pass
 
     if file_id not in file_cache:
         raise HTTPException(status_code=404, detail="File not found")
