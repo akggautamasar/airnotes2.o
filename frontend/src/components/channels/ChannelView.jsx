@@ -7,6 +7,7 @@ import {
 import { useApp } from '../../store/AppContext';
 import { api } from '../../utils/api';
 import FileCard from '../library/FileCard';
+import { getThumbnailUrl, hasThumbnail } from '../../utils/thumbnails';
 
 const TYPE_ICONS = { video: Film, pdf: FileText, epub: BookOpen };
 const TYPE_FILTERS = ['all', 'video', 'pdf', 'epub'];
@@ -192,7 +193,7 @@ export default function ChannelView() {
                   : 'space-y-1'
                 }>
                   {chFiles.slice(0, 8).map(file => (
-                    <FileCard key={file.id} file={file} viewMode={viewMode} />
+                    <FileCard key={file.id} file={file} viewMode={viewMode} thumbnailUrl={hasThumbnail(file.type) ? getThumbnailUrl(file.id) : undefined} />
                   ))}
                 </div>
                 {chFiles.length > 8 && (
@@ -213,7 +214,7 @@ export default function ChannelView() {
             : 'space-y-1'
           }`}>
             {files.map(file => (
-              <FileCard key={file.id} file={file} viewMode={viewMode} />
+              <FileCard key={file.id} file={file} viewMode={viewMode} thumbnailUrl={hasThumbnail(file.type) ? getThumbnailUrl(file.id) : undefined} />
             ))}
           </div>
         )}
