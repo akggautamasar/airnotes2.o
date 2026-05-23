@@ -1275,6 +1275,8 @@ async def get_thumbnail(file_id: str, user=Depends(require_auth)):
 
     # Serve from cache if available
     cached = folder_db.get("thumbnails", {}).get(file_id)
+    if cached == "__failed__":
+        raise HTTPException(status_code=422, detail="Thumbnail not available for this file")
     if cached:
         data = base64.b64decode(cached)
         return _Response(content=data, media_type="image/jpeg",
@@ -1303,7 +1305,7 @@ async def get_thumbnail(file_id: str, user=Depends(require_auth)):
 
         chunks = []
         total = 0
-        LIMIT = 512 * 1024  # 512KB is enough for PDF page 1
+        LIMIT = 5 * 1024 * 1024  # 5MB — needed for some PDFs to have valid structure
         async for chunk in client.stream_media(file_props.file_id, offset=0, limit=99999):
             chunks.append(chunk)
             total += len(chunk)
@@ -1415,6 +1417,9 @@ async def get_thumbnail(file_id: str, user=Depends(require_auth)):
                 logger.warning(f"EPUB cover extract failed for {file_id}: {e}")
 
         if not thumb_data:
+            # Cache a sentinel so we don't retry on every page load
+            folder_db.setdefault("thumbnails", {})[file_id] = "__failed__"
+            _save_folders()
             raise HTTPException(status_code=422, detail="Could not generate thumbnail")
 
         # Cache it permanently
