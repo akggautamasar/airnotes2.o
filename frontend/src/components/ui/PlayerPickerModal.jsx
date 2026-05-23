@@ -15,8 +15,9 @@ export default function PlayerPickerModal({ file, streamUrl, onClose }) {
   const isImage = file.type === 'image';
 
   const openFastPlayer = () => {
-    const url = `${window.location.origin.replace(/:\d+$/, '')}/player?url=${encodeURIComponent(streamUrl)}&name=${encodeURIComponent(file.name)}&id=${encodeURIComponent(file.id)}`;
-    window.open(url, '_blank');
+    const backendBase = import.meta.env.VITE_API_URL?.replace(/\/api$/, '') || '';
+    const playerUrl = `${backendBase}/player?url=${encodeURIComponent(streamUrl)}&name=${encodeURIComponent(file.name)}&id=${encodeURIComponent(file.id)}`;
+    window.open(playerUrl, '_blank');
     onClose();
   };
 
