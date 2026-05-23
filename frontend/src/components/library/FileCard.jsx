@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { FileText, BookOpen, Film, Clock, MoreVertical, FolderPlus, FolderMinus, Trash2, Pencil, Copy, Check, X, Music, Image } from 'lucide-react';
 import PlayerPickerModal from '../ui/PlayerPickerModal';
+import { acquireThumbSlot, releaseThumbSlot } from '../../utils/thumbnails';
 import { useApp } from '../../store/AppContext';
 import { api } from '../../utils/api';
 import { progressStore, recentStore } from '../../utils/storage';
@@ -19,12 +20,23 @@ export default function FileCard({ file, progress, thumbnailUrl, listMode = fals
 
   React.useEffect(() => {
     if (!thumbnailUrl) return;
+    let cancelled = false;
     const obs = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) { setThumbVisible(true); obs.disconnect(); } },
-      { rootMargin: '200px' }
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          obs.disconnect();
+          // Throttle: wait for a slot before marking visible (triggering img load)
+          acquireThumbSlot().then(() => {
+            if (!cancelled) setThumbVisible(true);
+            // Release slot after a short delay to let the request start
+            setTimeout(releaseThumbSlot, 1500);
+          });
+        }
+      },
+      { rootMargin: '100px' }
     );
     if (cardRef.current) obs.observe(cardRef.current);
-    return () => obs.disconnect();
+    return () => { cancelled = true; obs.disconnect(); };
   }, [thumbnailUrl]);
   const menuRef  = useRef(null);
   const renameRef= useRef(null);
