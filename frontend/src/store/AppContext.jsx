@@ -4,6 +4,7 @@ const Ctx = createContext(null);
 
 const initialState = {
   isAuthenticated: !!localStorage.getItem('airnotes_token'),
+  token: localStorage.getItem('airnotes_token') || '',
   files: [],
   filesLoading: false,
   filesError: null,
