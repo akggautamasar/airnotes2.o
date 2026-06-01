@@ -45,3 +45,6 @@ DATABASE_BACKUP_TIME   = int(os.getenv("DATABASE_BACKUP_TIME", "300"))
 SLEEP_THRESHOLD        = int(os.getenv("SLEEP_THRESHOLD", "60"))
 WEBSITE_URL            = os.getenv("WEBSITE_URL", None)
 FRONTEND_URL           = os.getenv("FRONTEND_URL", "*")
+# Active hours (UTC) for self-ping: "START-END". "0-24" = always.
+# Default 7am-10pm saves ~270 hrs/month vs Render's 750 hr/month free limit.
+PING_ACTIVE_HOURS      = os.getenv("PING_ACTIVE_HOURS", "7-22")
