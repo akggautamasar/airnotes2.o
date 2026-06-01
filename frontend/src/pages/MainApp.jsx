@@ -61,14 +61,8 @@ export default function MainApp() {
 
   async function loadExtras() {
     try {
-      const [favsRes, tagsRes, trashRes] = await Promise.all([
-        api.getFavorites(),
-        api.getAllTags(),
-        api.getTrash(),
-      ]);
-      actions.setFavorites(favsRes.favorites || []);
-      actions.setAllTags(tagsRes.tags || []);
-      actions.setTrashCount(trashRes.total || 0);
+      const res = await api.getFavorites();
+      actions.setFavorites(res.favorites || []);
     } catch {}
   }
 

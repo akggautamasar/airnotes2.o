@@ -1,29 +1,26 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import {
-  BookOpen, Clock, Home, FolderOpen, Folder, Plus, ChevronRight,
+  Home, Clock, FolderOpen, Folder, Plus, ChevronRight,
   Lock, Unlock, Trash2, Pencil, Check, X, MoreHorizontal,
-  BookMarked, Search, RefreshCw, LogOut, Hash, Globe, Star, Tag,
+  BookMarked, Search, RefreshCw, LogOut, Globe, Star, Hash,
 } from 'lucide-react';
 import { useApp } from '../store/AppContext';
 import { api } from '../utils/api';
 import FolderLockModal from './ui/FolderLockModal';
-import { tagColor } from './ui/TagModal';
 
 export default function Sidebar({ onSearch, onRefresh }) {
   const { state, actions } = useApp();
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName]   = useState('');
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving]   = useState(false);
   const [lockModal, setLockModal] = useState(null);
-  const [dragOver, setDragOver] = useState(null); // folder id being dragged over
 
   const navItems = [
-    { key: 'library',   icon: Home,       label: 'All Files',        count: state.files.length },
-    { key: 'favorites', icon: Star,        label: 'Favorites',        count: state.favorites.length },
-    { key: 'recent',    icon: Clock,       label: 'Recent',           count: state.recentFiles.length },
-    { key: 'continue',  icon: BookMarked,  label: 'Continue Reading', count: Object.keys(state.progress || {}).length },
-    { key: 'trash',     icon: Trash2,      label: 'Trash',            count: state.trashCount, danger: true },
+    { key: 'library',   icon: Home,      label: 'All Files',        count: state.files.length },
+    { key: 'favorites', icon: Star,       label: 'Favorites',        count: state.favorites.length },
+    { key: 'recent',    icon: Clock,      label: 'Recent',           count: state.recentFiles.length },
+    { key: 'continue',  icon: BookMarked, label: 'Continue Reading', count: Object.keys(state.progress || {}).length },
   ];
 
   async function createFolder() {
@@ -47,20 +44,7 @@ export default function Sidebar({ onSearch, onRefresh }) {
     if (confirm('Sign out of AirNotes?')) actions.logout();
   }
 
-  // Drop file onto a folder
-  async function handleFolderDrop(e, folderId) {
-    e.preventDefault();
-    setDragOver(null);
-    const fileId = e.dataTransfer.getData('fileId');
-    if (!fileId) return;
-    try {
-      await api.moveFile(fileId, folderId);
-      actions.assignFile(fileId, folderId);
-    } catch {}
-  }
-
-  // Build folder tree (top-level folders, then children)
-  const rootFolders = state.folders.filter(f => !f.parentId);
+  const rootFolders  = state.folders.filter(f => !f.parentId);
   const childFolders = (parentId) => state.folders.filter(f => f.parentId === parentId);
 
   return (
@@ -93,15 +77,12 @@ export default function Sidebar({ onSearch, onRefresh }) {
             <button
               key={item.key}
               onClick={() => actions.setActiveSection(item.key)}
-              className={`sidebar-item ${state.activeSection === item.key && !state.activeFolderId ? 'active' : ''}
-                ${item.danger ? 'text-red-400/70 hover:text-red-400 hover:bg-red-500/10' : ''}`}
+              className={`sidebar-item ${state.activeSection === item.key && !state.activeFolderId ? 'active' : ''}`}
             >
               <item.icon size={14} className="shrink-0" />
               <span className="flex-1 text-left text-xs">{item.label}</span>
               {item.count > 0 && (
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-full shrink-0 ${item.danger ? 'bg-red-500/20 text-red-400/80' : 'bg-ink-800 text-ink-500'}`}>
-                  {item.count}
-                </span>
+                <span className="text-[10px] bg-ink-800 text-ink-500 px-1.5 py-0.5 rounded-full shrink-0">{item.count}</span>
               )}
             </button>
           ))}
@@ -109,61 +90,36 @@ export default function Sidebar({ onSearch, onRefresh }) {
 
         <div className="mx-3 my-2 border-t border-ink-800/40 shrink-0" />
 
-        {/* Tags */}
-        {state.allTags.length > 0 && (
-          <div className="px-3 mb-1 shrink-0">
-            <div className="flex items-center justify-between px-1 py-1.5 mb-0.5">
-              <span className="text-[10px] font-semibold uppercase tracking-widest text-ink-600">Tags</span>
-            </div>
-            <div className="flex flex-wrap gap-1.5 px-1 py-1">
-              {state.allTags.slice(0, 10).map(tag => (
-                <button
-                  key={tag}
-                  onClick={() => actions.setActiveTag(tag)}
-                  className={`text-[10px] px-2 py-0.5 rounded-lg border transition-opacity
-                    ${state.activeSection === 'tag' && state.activeTag === tag ? 'opacity-100' : 'opacity-60 hover:opacity-100'}
-                    ${tagColor(tag)}`}
-                >
-                  #{tag}
+        {/* Channels */}
+        {state.channels.length > 0 && (
+          <>
+            <div className="px-3 mb-1 shrink-0">
+              <div className="flex items-center px-1 py-1.5 mb-0.5">
+                <span className="text-[10px] font-semibold uppercase tracking-widest text-ink-600">Channels</span>
+              </div>
+              <button
+                onClick={() => actions.setActiveChannel('__all__')}
+                className={`sidebar-item ${state.activeSection === 'channel' && state.activeChannelId === '__all__' ? 'active' : ''}`}>
+                <Globe size={13} className="shrink-0 text-accent/60" />
+                <span className="flex-1 text-left text-xs">All Channels</span>
+                <span className="text-[10px] bg-ink-800 text-ink-500 px-1.5 py-0.5 rounded-full shrink-0">
+                  {state.channels.reduce((s, c) => s + (c.file_count || 0), 0)}
+                </span>
+              </button>
+              {state.channels.map(ch => (
+                <button key={ch.str_id} onClick={() => actions.setActiveChannel(ch.str_id)}
+                  className={`sidebar-item ${state.activeSection === 'channel' && state.activeChannelId === ch.str_id ? 'active' : ''}`}>
+                  <Hash size={13} className="shrink-0 text-accent/50" />
+                  <span className="flex-1 text-left text-xs truncate">{ch.name}</span>
+                  {ch.file_count > 0 && (
+                    <span className="text-[10px] bg-ink-800 text-ink-500 px-1.5 py-0.5 rounded-full shrink-0">{ch.file_count}</span>
+                  )}
                 </button>
               ))}
             </div>
-          </div>
+            <div className="mx-3 my-1 border-t border-ink-800/40 shrink-0" />
+          </>
         )}
-
-        {(state.allTags.length > 0 || state.channels.length > 0) && (
-          <div className="mx-3 my-1 border-t border-ink-800/40 shrink-0" />
-        )}
-
-        {/* Channels */}
-        {state.channels.length > 0 && (
-          <div className="px-3 mb-1 shrink-0">
-            <div className="flex items-center justify-between px-1 py-1.5 mb-0.5">
-              <span className="text-[10px] font-semibold uppercase tracking-widest text-ink-600">Channels</span>
-            </div>
-            <button
-              onClick={() => actions.setActiveChannel('__all__')}
-              className={`sidebar-item ${state.activeSection === 'channel' && state.activeChannelId === '__all__' ? 'active' : ''}`}>
-              <Globe size={13} className="shrink-0 text-accent/60" />
-              <span className="flex-1 text-left text-xs">All Channels</span>
-              <span className="text-[10px] bg-ink-800 text-ink-500 px-1.5 py-0.5 rounded-full shrink-0">
-                {state.channels.reduce((s, c) => s + (c.file_count || 0), 0)}
-              </span>
-            </button>
-            {state.channels.map(ch => (
-              <button key={ch.str_id} onClick={() => actions.setActiveChannel(ch.str_id)}
-                className={`sidebar-item ${state.activeSection === 'channel' && state.activeChannelId === ch.str_id ? 'active' : ''}`}>
-                <Hash size={13} className="shrink-0 text-accent/50" />
-                <span className="flex-1 text-left text-xs truncate">{ch.name}</span>
-                {ch.file_count > 0 && (
-                  <span className="text-[10px] bg-ink-800 text-ink-500 px-1.5 py-0.5 rounded-full shrink-0">{ch.file_count}</span>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {state.channels.length > 0 && <div className="mx-3 my-1 border-t border-ink-800/40 shrink-0" />}
 
         {/* Folders */}
         <div className="flex-1 overflow-y-auto px-3 pb-2">
@@ -199,16 +155,12 @@ export default function Sidebar({ onSearch, onRefresh }) {
                 isActive={state.activeFolderId === folder.id}
                 isUnlocked={state.unlockedFolders.includes(folder.id)}
                 fileCount={Object.values(state.fileAssignments).filter(id => id === folder.id).length}
-                isDragOver={dragOver === folder.id}
                 activeFolderId={state.activeFolderId}
                 unlockedFolders={state.unlockedFolders}
                 fileAssignments={state.fileAssignments}
                 onSelectFolder={actions.setActiveFolder}
                 onSelect={() => actions.setActiveFolder(folder.id)}
                 onLockToggle={() => setLockModal({ folder, mode: folder.locked ? 'unlock' : 'lock' })}
-                onDragOver={(e) => { e.preventDefault(); if (dragOver !== folder.id) setDragOver(folder.id); }}
-                onDragLeave={() => setDragOver(null)}
-                onDrop={(e) => handleFolderDrop(e, folder.id)}
                 onDelete={async (id, name) => {
                   if (!confirm(`Delete folder "${name}"?`)) return;
                   try { await api.deleteFolder(id); actions.removeFolder(id); } catch (e) { alert(e.message); }
@@ -248,14 +200,14 @@ export default function Sidebar({ onSearch, onRefresh }) {
 // ── Recursive folder tree item ───────────────────────────────────────────────
 const FolderTree = React.memo(function FolderTree({
   folder, depth, children, childFoldersFn, isActive, isUnlocked, fileCount,
-  isDragOver, activeFolderId, unlockedFolders, fileAssignments, onSelectFolder,
-  onSelect, onLockToggle, onDragOver, onDragLeave, onDrop, onDelete, onRename,
+  activeFolderId, unlockedFolders, fileAssignments, onSelectFolder,
+  onSelect, onLockToggle, onDelete, onRename,
 }) {
   const [showMenu, setShowMenu]   = useState(false);
   const [renaming, setRenaming]   = useState(false);
   const [renameVal, setRenameVal] = useState('');
   const [expanded, setExpanded]   = useState(true);
-  const isLocked  = folder.locked && !isUnlocked;
+  const isLocked   = folder.locked && !isUnlocked;
   const hasChildren = children.length > 0;
   const Icon = isActive ? FolderOpen : (isLocked ? Lock : Folder);
 
@@ -274,24 +226,14 @@ const FolderTree = React.memo(function FolderTree({
 
   return (
     <div>
-      <div
-        className="relative group"
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
-        onDrop={onDrop}
-        style={{ paddingLeft: depth * 12 }}
-      >
+      <div className="relative group" style={{ paddingLeft: depth * 12 }}>
         <button
           onClick={onSelect}
-          className={`sidebar-item transition-all
-            ${isActive ? 'active' : ''}
-            ${isDragOver ? 'bg-accent/20 border border-accent/40' : ''}`}
+          className={`sidebar-item transition-all ${isActive ? 'active' : ''}`}
         >
           {hasChildren && (
-            <button
-              onClick={e => { e.stopPropagation(); setExpanded(v => !v); }}
-              className="shrink-0 text-ink-600 hover:text-ink-400 -ml-0.5 mr-0.5"
-            >
+            <button onClick={e => { e.stopPropagation(); setExpanded(v => !v); }}
+              className="shrink-0 text-ink-600 hover:text-ink-400 -ml-0.5 mr-0.5">
               <ChevronRight size={10} className={`transition-transform ${expanded ? 'rotate-90' : ''}`} />
             </button>
           )}
@@ -327,7 +269,6 @@ const FolderTree = React.memo(function FolderTree({
         </div>
       </div>
 
-      {/* Children (subfolders) */}
       {hasChildren && expanded && (
         <div className="space-y-0.5">
           {children.map(child => (
@@ -340,16 +281,12 @@ const FolderTree = React.memo(function FolderTree({
               isActive={activeFolderId === child.id}
               isUnlocked={unlockedFolders.includes(child.id)}
               fileCount={Object.values(fileAssignments).filter(id => id === child.id).length}
-              isDragOver={false}
               activeFolderId={activeFolderId}
               unlockedFolders={unlockedFolders}
               fileAssignments={fileAssignments}
               onSelectFolder={onSelectFolder}
               onSelect={() => onSelectFolder(child.id)}
               onLockToggle={() => {}}
-              onDragOver={(e) => e.preventDefault()}
-              onDragLeave={() => {}}
-              onDrop={() => {}}
               onDelete={onDelete}
               onRename={onRename}
             />

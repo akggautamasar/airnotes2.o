@@ -22,15 +22,7 @@ const initialState = {
   unlockedFolders: [],
   channels: [],
   activeChannelId: null,
-  // New feature state
-  favorites: [],           // array of file IDs
-  fileTags: {},            // { fileId: ['tag1', 'tag2'] }
-  allTags: [],             // all unique tag names
-  selectedFiles: new Set(),// bulk selection
-  sortBy: localStorage.getItem('sortBy') || 'date',
-  sortOrder: localStorage.getItem('sortOrder') || 'desc',
-  trashCount: 0,
-  activeTag: null,         // currently filtered tag
+  favorites: [],
 };
 
 function reducer(state, action) {
@@ -43,12 +35,12 @@ function reducer(state, action) {
     case 'SET_VIEW_MODE':
       localStorage.setItem('viewMode', action.payload);
       return { ...state, viewMode: action.payload };
-    case 'SET_ACTIVE_SECTION': return { ...state, activeSection: action.payload, activeFolderId: null, activeTag: null };
+    case 'SET_ACTIVE_SECTION': return { ...state, activeSection: action.payload, activeFolderId: null };
     case 'SET_FOLDERS':        return { ...state, folders: action.payload };
     case 'ADD_FOLDER':         return { ...state, folders: [...state.folders, action.payload] };
     case 'REMOVE_FOLDER':      return { ...state, folders: state.folders.filter(f => f.id !== action.payload) };
     case 'UPDATE_FOLDER':      return { ...state, folders: state.folders.map(f => f.id === action.payload.id ? { ...f, ...action.payload } : f) };
-    case 'SET_ACTIVE_FOLDER':  return { ...state, activeFolderId: action.payload, activeSection: 'folder', activeTag: null };
+    case 'SET_ACTIVE_FOLDER':  return { ...state, activeFolderId: action.payload, activeSection: 'folder' };
     case 'ASSIGN_FILE':        return { ...state, fileAssignments: { ...state.fileAssignments, [action.fileId]: action.folderId } };
     case 'UNASSIGN_FILE': {
       const a = { ...state.fileAssignments }; delete a[action.fileId]; return { ...state, fileAssignments: a };
@@ -70,41 +62,14 @@ function reducer(state, action) {
     case 'SAVE_PROGRESS': return { ...state, progress: { ...state.progress, [action.fileId]: action.data } };
     case 'UNLOCK_FOLDER': return { ...state, unlockedFolders: [...state.unlockedFolders.filter(id => id !== action.id), action.id] };
     case 'SET_CHANNELS': return { ...state, channels: action.payload };
-    case 'ADD_CHANNEL': return { ...state, channels: [...state.channels.filter(c => c.str_id !== action.payload.str_id), action.payload] };
+    case 'ADD_CHANNEL':  return { ...state, channels: [...state.channels.filter(c => c.str_id !== action.payload.str_id), action.payload] };
     case 'REMOVE_CHANNEL': return { ...state, channels: state.channels.filter(c => c.str_id !== action.payload) };
-    case 'SET_ACTIVE_CHANNEL': return { ...state, activeChannelId: action.payload, activeSection: 'channel', activeFolderId: null, activeTag: null };
-
-    // Favorites
+    case 'SET_ACTIVE_CHANNEL': return { ...state, activeChannelId: action.payload, activeSection: 'channel', activeFolderId: null };
     case 'SET_FAVORITES': return { ...state, favorites: action.payload };
     case 'TOGGLE_FAVORITE': {
       const isFav = state.favorites.includes(action.fileId);
       return { ...state, favorites: isFav ? state.favorites.filter(id => id !== action.fileId) : [...state.favorites, action.fileId] };
     }
-
-    // Tags
-    case 'SET_FILE_TAGS': return { ...state, fileTags: { ...state.fileTags, [action.fileId]: action.tags } };
-    case 'SET_ALL_TAGS':  return { ...state, allTags: action.payload };
-    case 'SET_ACTIVE_TAG': return { ...state, activeTag: action.payload, activeSection: 'tag', activeFolderId: null };
-
-    // Bulk selection
-    case 'TOGGLE_SELECT': {
-      const s = new Set(state.selectedFiles);
-      s.has(action.fileId) ? s.delete(action.fileId) : s.add(action.fileId);
-      return { ...state, selectedFiles: s };
-    }
-    case 'SELECT_ALL': return { ...state, selectedFiles: new Set(action.fileIds) };
-    case 'CLEAR_SELECTION': return { ...state, selectedFiles: new Set() };
-
-    // Sort
-    case 'SET_SORT': {
-      localStorage.setItem('sortBy', action.sortBy);
-      localStorage.setItem('sortOrder', action.sortOrder);
-      return { ...state, sortBy: action.sortBy, sortOrder: action.sortOrder };
-    }
-
-    // Trash
-    case 'SET_TRASH_COUNT': return { ...state, trashCount: action.payload };
-
     default: return state;
   }
 }
@@ -140,26 +105,8 @@ export function AppProvider({ children }) {
     addChannel:         useCallback((c) => dispatch({ type: 'ADD_CHANNEL', payload: c }), []),
     removeChannel:      useCallback((id) => dispatch({ type: 'REMOVE_CHANNEL', payload: id }), []),
     setActiveChannel:   useCallback((id) => dispatch({ type: 'SET_ACTIVE_CHANNEL', payload: id }), []),
-
-    // Favorites
     setFavorites:       useCallback((f) => dispatch({ type: 'SET_FAVORITES', payload: f }), []),
     toggleFavorite:     useCallback((fileId) => dispatch({ type: 'TOGGLE_FAVORITE', fileId }), []),
-
-    // Tags
-    setFileTags:        useCallback((fileId, tags) => dispatch({ type: 'SET_FILE_TAGS', fileId, tags }), []),
-    setAllTags:         useCallback((t) => dispatch({ type: 'SET_ALL_TAGS', payload: t }), []),
-    setActiveTag:       useCallback((tag) => dispatch({ type: 'SET_ACTIVE_TAG', payload: tag }), []),
-
-    // Bulk
-    toggleSelect:       useCallback((fileId) => dispatch({ type: 'TOGGLE_SELECT', fileId }), []),
-    selectAll:          useCallback((fileIds) => dispatch({ type: 'SELECT_ALL', fileIds }), []),
-    clearSelection:     useCallback(() => dispatch({ type: 'CLEAR_SELECTION' }), []),
-
-    // Sort
-    setSort:            useCallback((sortBy, sortOrder) => dispatch({ type: 'SET_SORT', sortBy, sortOrder }), []),
-
-    // Trash
-    setTrashCount:      useCallback((n) => dispatch({ type: 'SET_TRASH_COUNT', payload: n }), []),
   };
 
   return <Ctx.Provider value={{ state, actions }}>{children}</Ctx.Provider>;
