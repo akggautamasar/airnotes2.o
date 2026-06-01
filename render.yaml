@@ -5,6 +5,7 @@ services:
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /ping
     envVars:
       - key: API_ID
         sync: false
@@ -28,6 +29,8 @@ services:
         sync: false
       - key: FRONTEND_URL
         sync: false
+      - key: PING_ACTIVE_HOURS
+        value: "7-22"
     disk:
       name: airnotes-cache
       mountPath: /opt/render/project/src/backend/cache

@@ -539,7 +539,10 @@ async def lifespan(app: FastAPI):
         logger.error(f"Bot handler setup failed: {e}")
 
     if config.WEBSITE_URL:
-        asyncio.create_task(auto_ping_website(config.WEBSITE_URL))
+        asyncio.create_task(auto_ping_website(
+            config.WEBSITE_URL,
+            active_hours=config.PING_ACTIVE_HOURS,
+        ))
     yield
 
 
@@ -560,7 +563,13 @@ app.add_middleware(
     expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
 )
 
-# ─── Health ───────────────────────────────────────────────────────────────────
+# ─── Ping / Health ────────────────────────────────────────────────────────────
+@app.get("/ping")
+@app.head("/ping")
+async def ping():
+    """Lightweight liveness probe for Uptime Robot and Render health checks."""
+    return {"status": "ok"}
+
 @app.get("/health")
 @app.head("/health")
 async def health():
