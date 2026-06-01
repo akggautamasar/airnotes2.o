@@ -22,6 +22,7 @@ export default function MainApp() {
   useEffect(() => {
     api.verify().catch(() => actions.logout());
     loadAll(false);
+    loadExtras();
     connectSSE();
     return () => { sseRef.current?.close(); clearTimeout(retryRef.current); };
   }, []);
@@ -55,6 +56,19 @@ export default function MainApp() {
       localStorage.setItem(CACHE_KEY, JSON.stringify({
         files, folders, assignments, channels, ts: Date.now()
       }));
+    } catch {}
+  }
+
+  async function loadExtras() {
+    try {
+      const [favsRes, tagsRes, trashRes] = await Promise.all([
+        api.getFavorites(),
+        api.getAllTags(),
+        api.getTrash(),
+      ]);
+      actions.setFavorites(favsRes.favorites || []);
+      actions.setAllTags(tagsRes.tags || []);
+      actions.setTrashCount(trashRes.total || 0);
     } catch {}
   }
 

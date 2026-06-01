@@ -33,13 +33,37 @@ export const api = {
   copyFile:   (id) => request(`/files/${encodeURIComponent(id)}/copy`, { method: 'POST' }),
   moveFile:   (id, folderId) => request(`/files/${encodeURIComponent(id)}/move`, { method: 'POST', body: JSON.stringify({ folder_id: folderId }) }),
 
+  bulkDelete: (ids) => request('/files/bulk-delete', { method: 'POST', body: JSON.stringify({ file_ids: ids }) }),
+  bulkMove:   (ids, folderId) => request('/files/bulk-move', { method: 'POST', body: JSON.stringify({ file_ids: ids, folder_id: folderId }) }),
+
   getFolders:           () => request('/folders'),
-  createFolder:         (name) => request('/folders', { method: 'POST', body: JSON.stringify({ name }) }),
+  createFolder:         (name, parentId = null) => request('/folders', { method: 'POST', body: JSON.stringify({ name, parent_id: parentId }) }),
   updateFolder:         (id, data) => request(`/folders/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteFolder:         (id) => request(`/folders/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   getFolderFiles:       (id) => request(`/folders/${encodeURIComponent(id)}/files`),
   verifyFolderPassword: (id, hash) => request(`/folders/${encodeURIComponent(id)}/verify-password`, { method: 'POST', body: JSON.stringify({ password_hash: hash }) }),
   getFileAssignments:   () => request('/assignments'),
+
+  // Favorites
+  getFavorites:    () => request('/favorites'),
+  addFavorite:     (id) => request(`/favorites/${encodeURIComponent(id)}`, { method: 'POST' }),
+  removeFavorite:  (id) => request(`/favorites/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // Tags
+  getAllTags:   () => request('/tags'),
+  setFileTags: (id, tags) => request(`/files/${encodeURIComponent(id)}/tags`, { method: 'POST', body: JSON.stringify({ tags }) }),
+
+  // Trash
+  getTrash:         () => request('/trash'),
+  restoreFromTrash: (id) => request(`/trash/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
+  permanentDelete:  (id) => request(`/trash/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  emptyTrash:       () => request('/trash', { method: 'DELETE' }),
+
+  // Share links
+  createShareLink:  (id, expiresHours = 24) => request(`/files/${encodeURIComponent(id)}/share`, { method: 'POST', body: JSON.stringify({ expires_hours: expiresHours }) }),
+  getFileShares:    (id) => request(`/files/${encodeURIComponent(id)}/shares`),
+  revokeShareLink:  (id, token) => request(`/files/${encodeURIComponent(id)}/share/${encodeURIComponent(token)}`, { method: 'DELETE' }),
+  getShareBaseUrl:  () => (import.meta.env.VITE_API_URL || '/api').replace(/\/api\/?$/, ''),
 
   getStreamToken:       () => request('/auth/verify').then(() => {
     const token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token') || '';
@@ -56,7 +80,6 @@ export const api = {
   getAllChannelsFiles:   (type = null) => request(`/channels-all-files${type ? '?type=' + type : ''}`),
 
   // Stream URLs — token appended as query param for <video> / <audio> tags
-  // which cannot send Authorization headers
   getStreamUrl: (fileId) => {
     const t = getToken();
     return `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream${t ? '?token=' + encodeURIComponent(t) : ''}`;
@@ -74,7 +97,6 @@ export const api = {
     if (audioTrack > 0) params.set('audio_track', audioTrack);
     return base + '?' + params.toString();
   },
-  // PDF / EPUB use Bearer header directly — keep for backwards compat
   getStreamUrlWithToken: (fileId) => {
     const t = getToken();
     return `${BASE_URL}/files/${encodeURIComponent(fileId)}/stream${t ? '?token=' + encodeURIComponent(t) : ''}`;

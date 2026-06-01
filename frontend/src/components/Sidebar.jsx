@@ -3,23 +3,27 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   BookOpen, Clock, Home, FolderOpen, Folder, Plus, ChevronRight,
   Lock, Unlock, Trash2, Pencil, Check, X, MoreHorizontal,
-  BookMarked, Search, RefreshCw, LogOut, Hash, Globe,
+  BookMarked, Search, RefreshCw, LogOut, Hash, Globe, Star, Tag,
 } from 'lucide-react';
 import { useApp } from '../store/AppContext';
 import { api } from '../utils/api';
 import FolderLockModal from './ui/FolderLockModal';
+import { tagColor } from './ui/TagModal';
 
 export default function Sidebar({ onSearch, onRefresh }) {
   const { state, actions } = useApp();
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName]   = useState('');
   const [saving, setSaving] = useState(false);
-  const [lockModal, setLockModal] = useState(null); // { folder, mode }
+  const [lockModal, setLockModal] = useState(null);
+  const [dragOver, setDragOver] = useState(null); // folder id being dragged over
 
   const navItems = [
-    { key: 'library',  icon: Home,       label: 'All Files',        count: state.files.length },
-    { key: 'recent',   icon: Clock,      label: 'Recent',           count: state.recentFiles.length },
-    { key: 'continue', icon: BookMarked, label: 'Continue Reading', count: Object.keys(state.progress || {}).length },
+    { key: 'library',   icon: Home,       label: 'All Files',        count: state.files.length },
+    { key: 'favorites', icon: Star,        label: 'Favorites',        count: state.favorites.length },
+    { key: 'recent',    icon: Clock,       label: 'Recent',           count: state.recentFiles.length },
+    { key: 'continue',  icon: BookMarked,  label: 'Continue Reading', count: Object.keys(state.progress || {}).length },
+    { key: 'trash',     icon: Trash2,      label: 'Trash',            count: state.trashCount, danger: true },
   ];
 
   async function createFolder() {
@@ -43,6 +47,22 @@ export default function Sidebar({ onSearch, onRefresh }) {
     if (confirm('Sign out of AirNotes?')) actions.logout();
   }
 
+  // Drop file onto a folder
+  async function handleFolderDrop(e, folderId) {
+    e.preventDefault();
+    setDragOver(null);
+    const fileId = e.dataTransfer.getData('fileId');
+    if (!fileId) return;
+    try {
+      await api.moveFile(fileId, folderId);
+      actions.assignFile(fileId, folderId);
+    } catch {}
+  }
+
+  // Build folder tree (top-level folders, then children)
+  const rootFolders = state.folders.filter(f => !f.parentId);
+  const childFolders = (parentId) => state.folders.filter(f => f.parentId === parentId);
+
   return (
     <>
       <aside className="w-56 h-full bg-ink-900 border-r border-ink-800/50 flex flex-col">
@@ -59,11 +79,8 @@ export default function Sidebar({ onSearch, onRefresh }) {
 
         {/* Search */}
         <div className="px-3 py-3 shrink-0">
-          <button
-            onClick={onSearch}
-            className="w-full flex items-center gap-2 px-3 py-2 rounded-xl bg-ink-800/60 border border-ink-700/30
-                       text-ink-400 text-xs hover:bg-ink-800 hover:text-ink-200 transition-all"
-          >
+          <button onClick={onSearch}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-xl bg-ink-800/60 border border-ink-700/30 text-ink-400 text-xs hover:bg-ink-800 hover:text-ink-200 transition-all">
             <Search size={13} />
             <span className="flex-1 text-left">Search…</span>
             <kbd className="text-[10px] bg-ink-700/50 px-1.5 py-0.5 rounded text-ink-500 font-mono">⌘K</kbd>
@@ -76,19 +93,47 @@ export default function Sidebar({ onSearch, onRefresh }) {
             <button
               key={item.key}
               onClick={() => actions.setActiveSection(item.key)}
-              className={`sidebar-item ${state.activeSection === item.key && !state.activeFolderId ? 'active' : ''}`}
+              className={`sidebar-item ${state.activeSection === item.key && !state.activeFolderId ? 'active' : ''}
+                ${item.danger ? 'text-red-400/70 hover:text-red-400 hover:bg-red-500/10' : ''}`}
             >
               <item.icon size={14} className="shrink-0" />
               <span className="flex-1 text-left text-xs">{item.label}</span>
               {item.count > 0 && (
-                <span className="text-[10px] bg-ink-800 text-ink-500 px-1.5 py-0.5 rounded-full shrink-0">{item.count}</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full shrink-0 ${item.danger ? 'bg-red-500/20 text-red-400/80' : 'bg-ink-800 text-ink-500'}`}>
+                  {item.count}
+                </span>
               )}
             </button>
           ))}
         </nav>
 
-        {/* Divider */}
         <div className="mx-3 my-2 border-t border-ink-800/40 shrink-0" />
+
+        {/* Tags */}
+        {state.allTags.length > 0 && (
+          <div className="px-3 mb-1 shrink-0">
+            <div className="flex items-center justify-between px-1 py-1.5 mb-0.5">
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-ink-600">Tags</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5 px-1 py-1">
+              {state.allTags.slice(0, 10).map(tag => (
+                <button
+                  key={tag}
+                  onClick={() => actions.setActiveTag(tag)}
+                  className={`text-[10px] px-2 py-0.5 rounded-lg border transition-opacity
+                    ${state.activeSection === 'tag' && state.activeTag === tag ? 'opacity-100' : 'opacity-60 hover:opacity-100'}
+                    ${tagColor(tag)}`}
+                >
+                  #{tag}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {(state.allTags.length > 0 || state.channels.length > 0) && (
+          <div className="mx-3 my-1 border-t border-ink-800/40 shrink-0" />
+        )}
 
         {/* Channels */}
         {state.channels.length > 0 && (
@@ -96,11 +141,9 @@ export default function Sidebar({ onSearch, onRefresh }) {
             <div className="flex items-center justify-between px-1 py-1.5 mb-0.5">
               <span className="text-[10px] font-semibold uppercase tracking-widest text-ink-600">Channels</span>
             </div>
-            {/* All Channels */}
             <button
               onClick={() => actions.setActiveChannel('__all__')}
-              className={`sidebar-item ${state.activeSection === 'channel' && state.activeChannelId === '__all__' ? 'active' : ''}`}
-            >
+              className={`sidebar-item ${state.activeSection === 'channel' && state.activeChannelId === '__all__' ? 'active' : ''}`}>
               <Globe size={13} className="shrink-0 text-accent/60" />
               <span className="flex-1 text-left text-xs">All Channels</span>
               <span className="text-[10px] bg-ink-800 text-ink-500 px-1.5 py-0.5 rounded-full shrink-0">
@@ -108,11 +151,8 @@ export default function Sidebar({ onSearch, onRefresh }) {
               </span>
             </button>
             {state.channels.map(ch => (
-              <button
-                key={ch.str_id}
-                onClick={() => actions.setActiveChannel(ch.str_id)}
-                className={`sidebar-item ${state.activeSection === 'channel' && state.activeChannelId === ch.str_id ? 'active' : ''}`}
-              >
+              <button key={ch.str_id} onClick={() => actions.setActiveChannel(ch.str_id)}
+                className={`sidebar-item ${state.activeSection === 'channel' && state.activeChannelId === ch.str_id ? 'active' : ''}`}>
                 <Hash size={13} className="shrink-0 text-accent/50" />
                 <span className="flex-1 text-left text-xs truncate">{ch.name}</span>
                 {ch.file_count > 0 && (
@@ -123,50 +163,54 @@ export default function Sidebar({ onSearch, onRefresh }) {
           </div>
         )}
 
-        {/* Divider before Folders */}
         {state.channels.length > 0 && <div className="mx-3 my-1 border-t border-ink-800/40 shrink-0" />}
 
         {/* Folders */}
         <div className="flex-1 overflow-y-auto px-3 pb-2">
           <div className="flex items-center justify-between px-1 py-1.5 mb-1">
             <span className="text-[10px] font-semibold uppercase tracking-widest text-ink-600">Folders</span>
-            <button
-              onClick={() => setCreatingFolder(true)}
-              className="text-ink-600 hover:text-ink-300 transition-colors p-0.5 rounded"
-              title="New folder"
-            >
+            <button onClick={() => setCreatingFolder(true)}
+              className="text-ink-600 hover:text-ink-300 transition-colors p-0.5 rounded" title="New folder">
               <Plus size={12} />
             </button>
           </div>
 
           {creatingFolder && (
-            <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}
-              className="flex gap-1 mb-2">
+            <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} className="flex gap-1 mb-2">
               <input
-                autoFocus
-                value={newFolderName}
-                onChange={e => setNewFolderName(e.target.value)}
+                autoFocus value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') createFolder(); if (e.key === 'Escape') { setCreatingFolder(false); setNewFolderName(''); } }}
                 placeholder="Folder name…"
                 className="flex-1 bg-ink-800 border border-ink-700 rounded-lg px-2 py-1 text-xs text-ink-100 outline-none focus:border-accent/50"
               />
-              <button onClick={createFolder} disabled={saving} className="text-accent hover:text-accent-hover p-1"><Check size={11} /></button>
+              <button onClick={createFolder} disabled={saving} className="text-accent p-1"><Check size={11} /></button>
               <button onClick={() => { setCreatingFolder(false); setNewFolderName(''); }} className="text-ink-500 p-1"><X size={11} /></button>
             </motion.div>
           )}
 
           <div className="space-y-0.5">
-            {state.folders.map(folder => (
-              <FolderItem
+            {rootFolders.map(folder => (
+              <FolderTree
                 key={folder.id}
                 folder={folder}
+                depth={0}
+                children={childFolders(folder.id)}
+                childFoldersFn={childFolders}
                 isActive={state.activeFolderId === folder.id}
                 isUnlocked={state.unlockedFolders.includes(folder.id)}
                 fileCount={Object.values(state.fileAssignments).filter(id => id === folder.id).length}
+                isDragOver={dragOver === folder.id}
+                activeFolderId={state.activeFolderId}
+                unlockedFolders={state.unlockedFolders}
+                fileAssignments={state.fileAssignments}
+                onSelectFolder={actions.setActiveFolder}
                 onSelect={() => actions.setActiveFolder(folder.id)}
                 onLockToggle={() => setLockModal({ folder, mode: folder.locked ? 'unlock' : 'lock' })}
-                onDelete={async (id) => {
-                  if (!confirm(`Delete folder "${folder.name}"?`)) return;
+                onDragOver={(e) => { e.preventDefault(); if (dragOver !== folder.id) setDragOver(folder.id); }}
+                onDragLeave={() => setDragOver(null)}
+                onDrop={(e) => handleFolderDrop(e, folder.id)}
+                onDelete={async (id, name) => {
+                  if (!confirm(`Delete folder "${name}"?`)) return;
                   try { await api.deleteFolder(id); actions.removeFolder(id); } catch (e) { alert(e.message); }
                 }}
                 onRename={async (id, name) => {
@@ -193,73 +237,125 @@ export default function Sidebar({ onSearch, onRefresh }) {
         </div>
       </aside>
 
-      {/* Folder lock modal */}
       {lockModal && (
-        <FolderLockModal
-          folder={lockModal.folder}
-          mode={lockModal.mode}
-          onClose={() => setLockModal(null)}
-          onSuccess={() => setLockModal(null)}
-        />
+        <FolderLockModal folder={lockModal.folder} mode={lockModal.mode}
+          onClose={() => setLockModal(null)} onSuccess={() => setLockModal(null)} />
       )}
     </>
   );
 }
 
-function FolderItem({ folder, isActive, isUnlocked, fileCount, onSelect, onLockToggle, onDelete, onRename }) {
-  const [showMenu, setShowMenu] = useState(false);
-  const [renaming, setRenaming] = useState(false);
+// ── Recursive folder tree item ───────────────────────────────────────────────
+const FolderTree = React.memo(function FolderTree({
+  folder, depth, children, childFoldersFn, isActive, isUnlocked, fileCount,
+  isDragOver, activeFolderId, unlockedFolders, fileAssignments, onSelectFolder,
+  onSelect, onLockToggle, onDragOver, onDragLeave, onDrop, onDelete, onRename,
+}) {
+  const [showMenu, setShowMenu]   = useState(false);
+  const [renaming, setRenaming]   = useState(false);
   const [renameVal, setRenameVal] = useState('');
-  const isLocked = folder.locked && !isUnlocked;
+  const [expanded, setExpanded]   = useState(true);
+  const isLocked  = folder.locked && !isUnlocked;
+  const hasChildren = children.length > 0;
   const Icon = isActive ? FolderOpen : (isLocked ? Lock : Folder);
 
   if (renaming) return (
-    <div className="flex gap-1">
+    <div className="flex gap-1" style={{ paddingLeft: depth * 12 }}>
       <input autoFocus value={renameVal} onChange={e => setRenameVal(e.target.value)}
         onKeyDown={e => {
           if (e.key === 'Enter') { onRename(folder.id, renameVal.trim()); setRenaming(false); }
           if (e.key === 'Escape') setRenaming(false);
         }}
-        className="flex-1 bg-ink-800 border border-ink-700 rounded-lg px-2 py-1 text-xs text-ink-100 outline-none focus:border-accent/50"
-      />
+        className="flex-1 bg-ink-800 border border-ink-700 rounded-lg px-2 py-1 text-xs text-ink-100 outline-none focus:border-accent/50" />
       <button onClick={() => { onRename(folder.id, renameVal.trim()); setRenaming(false); }} className="text-accent p-1"><Check size={11}/></button>
       <button onClick={() => setRenaming(false)} className="text-ink-500 p-1"><X size={11}/></button>
     </div>
   );
 
   return (
-    <div className="relative group">
-      <button onClick={onSelect} className={`sidebar-item ${isActive ? 'active' : ''}`}>
-        <Icon size={13} className={`shrink-0 ${isLocked ? 'text-amber-500/70' : ''}`} />
-        <span className="flex-1 text-left text-xs truncate">{folder.name}</span>
-        {fileCount > 0 && <span className="text-[10px] bg-ink-800 text-ink-500 px-1 rounded shrink-0">{fileCount}</span>}
-      </button>
-
-      <div className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button onClick={e => { e.stopPropagation(); setShowMenu(!showMenu); }}
-          className="p-1 rounded text-ink-600 hover:text-ink-300">
-          <MoreHorizontal size={11} />
+    <div>
+      <div
+        className="relative group"
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+        style={{ paddingLeft: depth * 12 }}
+      >
+        <button
+          onClick={onSelect}
+          className={`sidebar-item transition-all
+            ${isActive ? 'active' : ''}
+            ${isDragOver ? 'bg-accent/20 border border-accent/40' : ''}`}
+        >
+          {hasChildren && (
+            <button
+              onClick={e => { e.stopPropagation(); setExpanded(v => !v); }}
+              className="shrink-0 text-ink-600 hover:text-ink-400 -ml-0.5 mr-0.5"
+            >
+              <ChevronRight size={10} className={`transition-transform ${expanded ? 'rotate-90' : ''}`} />
+            </button>
+          )}
+          <Icon size={13} className={`shrink-0 ${isLocked ? 'text-amber-500/70' : ''}`} />
+          <span className="flex-1 text-left text-xs truncate">{folder.name}</span>
+          {fileCount > 0 && <span className="text-[10px] bg-ink-800 text-ink-500 px-1 rounded shrink-0">{fileCount}</span>}
         </button>
-        {showMenu && (
-          <div className="absolute right-0 top-full mt-1 glass rounded-xl shadow-xl min-w-[148px] py-1 z-50"
-               onMouseLeave={() => setShowMenu(false)}>
-            <button onClick={() => { setRenameVal(folder.name); setRenaming(true); setShowMenu(false); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-ink-300 hover:bg-ink-800/50">
-              <Pencil size={11} /> Rename
-            </button>
-            <button onClick={() => { onLockToggle(); setShowMenu(false); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-ink-300 hover:bg-ink-800/50">
-              {folder.locked ? <Unlock size={11} className="text-amber-400" /> : <Lock size={11} />}
-              {folder.locked ? 'Manage lock' : 'Lock folder'}
-            </button>
-            <div className="border-t border-ink-700/40 my-0.5" />
-            <button onClick={() => { onDelete(folder.id); setShowMenu(false); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10">
-              <Trash2 size={11} /> Delete
-            </button>
-          </div>
-        )}
+
+        <div className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button onClick={e => { e.stopPropagation(); setShowMenu(!showMenu); }}
+            className="p-1 rounded text-ink-600 hover:text-ink-300">
+            <MoreHorizontal size={11} />
+          </button>
+          {showMenu && (
+            <div className="absolute right-0 top-full mt-1 glass rounded-xl shadow-xl min-w-[148px] py-1 z-50"
+              onMouseLeave={() => setShowMenu(false)}>
+              <button onClick={() => { setRenameVal(folder.name); setRenaming(true); setShowMenu(false); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-ink-300 hover:bg-ink-800/50">
+                <Pencil size={11} /> Rename
+              </button>
+              <button onClick={() => { onLockToggle(); setShowMenu(false); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-ink-300 hover:bg-ink-800/50">
+                {folder.locked ? <Unlock size={11} className="text-amber-400" /> : <Lock size={11} />}
+                {folder.locked ? 'Manage lock' : 'Lock folder'}
+              </button>
+              <div className="border-t border-ink-700/40 my-0.5" />
+              <button onClick={() => { onDelete(folder.id, folder.name); setShowMenu(false); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10">
+                <Trash2 size={11} /> Delete
+              </button>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* Children (subfolders) */}
+      {hasChildren && expanded && (
+        <div className="space-y-0.5">
+          {children.map(child => (
+            <FolderTree
+              key={child.id}
+              folder={child}
+              depth={depth + 1}
+              children={childFoldersFn(child.id)}
+              childFoldersFn={childFoldersFn}
+              isActive={activeFolderId === child.id}
+              isUnlocked={unlockedFolders.includes(child.id)}
+              fileCount={Object.values(fileAssignments).filter(id => id === child.id).length}
+              isDragOver={false}
+              activeFolderId={activeFolderId}
+              unlockedFolders={unlockedFolders}
+              fileAssignments={fileAssignments}
+              onSelectFolder={onSelectFolder}
+              onSelect={() => onSelectFolder(child.id)}
+              onLockToggle={() => {}}
+              onDragOver={(e) => e.preventDefault()}
+              onDragLeave={() => {}}
+              onDrop={() => {}}
+              onDelete={onDelete}
+              onRename={onRename}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
-}
+});

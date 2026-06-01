@@ -115,6 +115,10 @@ async def _restore_from_telegram():
             folder_db.setdefault("file_assignments", {})
             folder_db.setdefault("file_cache_data", {})
             folder_db.setdefault("thumbnails", {})
+            folder_db.setdefault("favorites", [])
+            folder_db.setdefault("file_tags", {})
+            folder_db.setdefault("trash", {})
+            folder_db.setdefault("share_tokens", {})
 
             # Restore file_cache from persisted data — instant, no Telegram scan needed
             restored = folder_db.get("file_cache_data", {})
@@ -144,6 +148,10 @@ def _load_folders():
             folder_db.setdefault("file_assignments", {})
             folder_db.setdefault("file_cache_data", {})
             folder_db.setdefault("thumbnails", {})
+            folder_db.setdefault("favorites", [])
+            folder_db.setdefault("file_tags", {})
+            folder_db.setdefault("trash", {})
+            folder_db.setdefault("share_tokens", {})
             # Restore file cache from disk
             restored = folder_db.get("file_cache_data", {})
             file_cache.clear()
@@ -794,15 +802,17 @@ async def delete_file(file_id: str, user=Depends(require_auth)):
     if file_id not in file_cache:
         raise HTTPException(status_code=404, detail="File not found")
     info = file_cache[file_id]
-    try:
-        client = get_client()
-        channel_id = info.get("channel_id", config.STORAGE_CHANNEL)
-        await client.delete_messages(channel_id, [info["message_id"]])
-    except Exception as e:
-        logger.warning(f"Could not delete Telegram message: {e}")
+    # Soft delete — move to trash so files can be restored
+    trash = folder_db.setdefault("trash", {})
+    trash[file_id] = {
+        **info,
+        "deleted_at": datetime.utcnow().isoformat(),
+        "original_folder_id": folder_db.get("file_assignments", {}).get(file_id),
+    }
     del file_cache[file_id]
     folder_db["file_assignments"].pop(file_id, None)
     folder_db.setdefault("file_meta", {}).pop(file_id, None)
+    folder_db.get("favorites", []).remove(file_id) if file_id in folder_db.get("favorites", []) else None
     _save_and_backup()
     return {"success": True}
 
@@ -1055,6 +1065,204 @@ async def get_all_channels_files(type: str = None, user=Depends(require_auth)):
         files = [f for f in files if f.get("type") == type]
     files.sort(key=lambda f: f["date"], reverse=True)
     return {"files": files, "total": len(files), "channel_count": len(registry)}
+
+# ─── Favorites ────────────────────────────────────────────────────────────────
+@app.get("/api/favorites")
+async def list_favorites(user=Depends(require_auth)):
+    return {"favorites": folder_db.get("favorites", [])}
+
+@app.post("/api/favorites/{file_id}")
+async def add_favorite(file_id: str, user=Depends(require_auth)):
+    if file_id not in file_cache:
+        raise HTTPException(status_code=404, detail="File not found")
+    favs = folder_db.setdefault("favorites", [])
+    if file_id not in favs:
+        favs.append(file_id)
+        _save_and_backup()
+    return {"success": True}
+
+@app.delete("/api/favorites/{file_id}")
+async def remove_favorite(file_id: str, user=Depends(require_auth)):
+    favs = folder_db.get("favorites", [])
+    if file_id in favs:
+        favs.remove(file_id)
+        _save_and_backup()
+    return {"success": True}
+
+# ─── Tags ─────────────────────────────────────────────────────────────────────
+@app.get("/api/tags")
+async def list_all_tags(user=Depends(require_auth)):
+    all_tags: set = set()
+    for tags in folder_db.get("file_tags", {}).values():
+        all_tags.update(tags)
+    return {"tags": sorted(all_tags)}
+
+@app.post("/api/files/{file_id}/tags")
+async def set_file_tags(file_id: str, request: Request, user=Depends(require_auth)):
+    if file_id not in file_cache:
+        raise HTTPException(status_code=404, detail="File not found")
+    body = await request.json()
+    tags = list(dict.fromkeys(t.strip().lower() for t in body.get("tags", []) if t.strip()))
+    file_tags = folder_db.setdefault("file_tags", {})
+    if tags:
+        file_tags[file_id] = tags
+    else:
+        file_tags.pop(file_id, None)
+    _save_and_backup()
+    return {"success": True, "tags": tags}
+
+# ─── Bulk operations ──────────────────────────────────────────────────────────
+@app.post("/api/files/bulk-delete")
+async def bulk_delete_files(request: Request, user=Depends(require_auth)):
+    body = await request.json()
+    file_ids = body.get("file_ids", [])
+    deleted, failed = [], []
+    trash = folder_db.setdefault("trash", {})
+    for fid in file_ids:
+        if fid not in file_cache:
+            failed.append(fid)
+            continue
+        trash[fid] = {
+            **file_cache[fid],
+            "deleted_at": datetime.utcnow().isoformat(),
+            "original_folder_id": folder_db.get("file_assignments", {}).get(fid),
+        }
+        del file_cache[fid]
+        folder_db["file_assignments"].pop(fid, None)
+        favs = folder_db.get("favorites", [])
+        if fid in favs:
+            favs.remove(fid)
+        deleted.append(fid)
+    _save_and_backup()
+    return {"deleted": deleted, "failed": failed}
+
+@app.post("/api/files/bulk-move")
+async def bulk_move_files(request: Request, user=Depends(require_auth)):
+    body = await request.json()
+    file_ids = body.get("file_ids", [])
+    folder_id = body.get("folder_id")
+    if folder_id and folder_id not in folder_db["folders"]:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    assignments = folder_db["file_assignments"]
+    moved = 0
+    for fid in file_ids:
+        if fid not in file_cache:
+            continue
+        if folder_id is None:
+            assignments.pop(fid, None)
+        else:
+            assignments[fid] = folder_id
+        moved += 1
+    _save_and_backup()
+    return {"success": True, "moved": moved}
+
+# ─── Trash ────────────────────────────────────────────────────────────────────
+@app.get("/api/trash")
+async def list_trash(user=Depends(require_auth)):
+    trash = folder_db.get("trash", {})
+    items = sorted(trash.values(), key=lambda f: f.get("deleted_at", ""), reverse=True)
+    return {"files": items, "total": len(items)}
+
+@app.post("/api/trash/{file_id}/restore")
+async def restore_from_trash(file_id: str, user=Depends(require_auth)):
+    trash = folder_db.get("trash", {})
+    if file_id not in trash:
+        raise HTTPException(status_code=404, detail="File not in trash")
+    item = {**trash.pop(file_id)}
+    folder_id = item.pop("original_folder_id", None)
+    item.pop("deleted_at", None)
+    file_cache[file_id] = item
+    if folder_id and folder_id in folder_db["folders"]:
+        folder_db["file_assignments"][file_id] = folder_id
+    _save_and_backup()
+    return {"success": True, "file": item}
+
+@app.delete("/api/trash/{file_id}")
+async def permanently_delete(file_id: str, user=Depends(require_auth)):
+    trash = folder_db.get("trash", {})
+    if file_id not in trash:
+        raise HTTPException(status_code=404, detail="File not in trash")
+    info = trash.pop(file_id)
+    try:
+        client = get_client()
+        channel_id = info.get("channel_id", config.STORAGE_CHANNEL)
+        await client.delete_messages(channel_id, [info["message_id"]])
+    except Exception as e:
+        logger.warning(f"Could not delete Telegram message: {e}")
+    _save_and_backup()
+    return {"success": True}
+
+@app.delete("/api/trash")
+async def empty_trash(user=Depends(require_auth)):
+    trash = folder_db.get("trash", {})
+    count = len(trash)
+    for info in list(trash.values()):
+        try:
+            client = get_client()
+            await client.delete_messages(info.get("channel_id", config.STORAGE_CHANNEL), [info["message_id"]])
+        except Exception as e:
+            logger.warning(f"Trash purge Telegram delete failed: {e}")
+    folder_db["trash"] = {}
+    _save_and_backup()
+    return {"success": True, "deleted": count}
+
+# ─── Share Links ──────────────────────────────────────────────────────────────
+import secrets as _secrets
+
+@app.post("/api/files/{file_id}/share")
+async def create_share_link(file_id: str, request: Request, user=Depends(require_auth)):
+    if file_id not in file_cache:
+        raise HTTPException(status_code=404, detail="File not found")
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    token = _secrets.token_urlsafe(16)
+    expiry_hours = int(body.get("expires_hours", 24))
+    expires_at = (datetime.utcnow() + timedelta(hours=expiry_hours)).isoformat() if expiry_hours > 0 else None
+    share_tokens = folder_db.setdefault("share_tokens", {})
+    share_tokens[token] = {
+        "file_id": file_id,
+        "created_at": datetime.utcnow().isoformat(),
+        "expires_at": expires_at,
+        "label": file_cache[file_id].get("name", ""),
+    }
+    _save_and_backup()
+    return {"success": True, "token": token, "expires_at": expires_at}
+
+@app.get("/api/files/{file_id}/shares")
+async def list_file_shares(file_id: str, user=Depends(require_auth)):
+    share_tokens = folder_db.get("share_tokens", {})
+    shares = [{"token": t, **v} for t, v in share_tokens.items() if v.get("file_id") == file_id]
+    return {"shares": shares}
+
+@app.delete("/api/files/{file_id}/share/{token}")
+async def revoke_share_link(file_id: str, token: str, user=Depends(require_auth)):
+    share_tokens = folder_db.get("share_tokens", {})
+    if token not in share_tokens or share_tokens[token].get("file_id") != file_id:
+        raise HTTPException(status_code=404, detail="Share link not found")
+    del share_tokens[token]
+    _save_and_backup()
+    return {"success": True}
+
+@app.get("/share/{token}")
+async def stream_shared_file(token: str, request: Request):
+    """Public endpoint — no auth — for shared file access."""
+    share_tokens = folder_db.get("share_tokens", {})
+    if token not in share_tokens:
+        raise HTTPException(status_code=404, detail="Share link not found or expired")
+    share = share_tokens[token]
+    if share.get("expires_at"):
+        if datetime.utcnow() > datetime.fromisoformat(share["expires_at"]):
+            del share_tokens[token]
+            _save_and_backup()
+            raise HTTPException(status_code=410, detail="Share link has expired")
+    file_id = share["file_id"]
+    if file_id not in file_cache:
+        raise HTTPException(status_code=404, detail="File not found")
+    info = file_cache[file_id]
+    return await media_streamer(info.get("channel_id", config.STORAGE_CHANNEL), info["message_id"], info["name"], request)
 
 # ─── AirPlayer (served as standalone HTML page) ───────────────────────────────
 from fastapi.responses import HTMLResponse
