@@ -200,9 +200,13 @@ export default function Sidebar({ onSearch, onRefresh }) {
                 isUnlocked={state.unlockedFolders.includes(folder.id)}
                 fileCount={Object.values(state.fileAssignments).filter(id => id === folder.id).length}
                 isDragOver={dragOver === folder.id}
+                activeFolderId={state.activeFolderId}
+                unlockedFolders={state.unlockedFolders}
+                fileAssignments={state.fileAssignments}
+                onSelectFolder={actions.setActiveFolder}
                 onSelect={() => actions.setActiveFolder(folder.id)}
                 onLockToggle={() => setLockModal({ folder, mode: folder.locked ? 'unlock' : 'lock' })}
-                onDragOver={(e) => { e.preventDefault(); setDragOver(folder.id); }}
+                onDragOver={(e) => { e.preventDefault(); if (dragOver !== folder.id) setDragOver(folder.id); }}
                 onDragLeave={() => setDragOver(null)}
                 onDrop={(e) => handleFolderDrop(e, folder.id)}
                 onDelete={async (id, name) => {
@@ -242,9 +246,11 @@ export default function Sidebar({ onSearch, onRefresh }) {
 }
 
 // ── Recursive folder tree item ───────────────────────────────────────────────
-function FolderTree({ folder, depth, children, childFoldersFn, isActive, isUnlocked, fileCount,
-                      isDragOver, onSelect, onLockToggle, onDragOver, onDragLeave, onDrop, onDelete, onRename }) {
-  const { state, actions } = useApp();
+const FolderTree = React.memo(function FolderTree({
+  folder, depth, children, childFoldersFn, isActive, isUnlocked, fileCount,
+  isDragOver, activeFolderId, unlockedFolders, fileAssignments, onSelectFolder,
+  onSelect, onLockToggle, onDragOver, onDragLeave, onDrop, onDelete, onRename,
+}) {
   const [showMenu, setShowMenu]   = useState(false);
   const [renaming, setRenaming]   = useState(false);
   const [renameVal, setRenameVal] = useState('');
@@ -331,11 +337,15 @@ function FolderTree({ folder, depth, children, childFoldersFn, isActive, isUnloc
               depth={depth + 1}
               children={childFoldersFn(child.id)}
               childFoldersFn={childFoldersFn}
-              isActive={state.activeFolderId === child.id}
-              isUnlocked={state.unlockedFolders.includes(child.id)}
-              fileCount={Object.values(state.fileAssignments).filter(id => id === child.id).length}
+              isActive={activeFolderId === child.id}
+              isUnlocked={unlockedFolders.includes(child.id)}
+              fileCount={Object.values(fileAssignments).filter(id => id === child.id).length}
               isDragOver={false}
-              onSelect={() => actions.setActiveFolder(child.id)}
+              activeFolderId={activeFolderId}
+              unlockedFolders={unlockedFolders}
+              fileAssignments={fileAssignments}
+              onSelectFolder={onSelectFolder}
+              onSelect={() => onSelectFolder(child.id)}
               onLockToggle={() => {}}
               onDragOver={(e) => e.preventDefault()}
               onDragLeave={() => {}}
@@ -348,4 +358,4 @@ function FolderTree({ folder, depth, children, childFoldersFn, isActive, isUnloc
       )}
     </div>
   );
-}
+});

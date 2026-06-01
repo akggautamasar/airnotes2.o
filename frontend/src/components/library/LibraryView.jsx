@@ -1,17 +1,15 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Grid, List, RefreshCw, AlertCircle, Loader2, FolderIcon as FolderIcon2,
-         Sun, Moon, ArrowUpDown, ChevronDown, Trash2, RotateCcw, X, CheckSquare } from 'lucide-react';
+import { Grid, List, RefreshCw, AlertCircle, Loader2,
+         Sun, Moon, ArrowUpDown, Trash2, X, CheckSquare } from 'lucide-react';
 import { Folder as FolderIcon } from 'lucide-react';
 import { useApp } from '../../store/AppContext';
 import { api } from '../../utils/api';
-import { progressStore, recentStore } from '../../utils/storage';
+import { progressStore } from '../../utils/storage';
 import { getThumbnailUrl, hasThumbnail, isThumbnailReady, loadReadyThumbnails } from '../../utils/thumbnails';
 import FileCard from './FileCard';
 import FolderLockModal from '../ui/FolderLockModal';
 import ChannelView from '../channels/ChannelView';
-import ShareModal from '../ui/ShareModal';
-import TagModal from '../ui/TagModal';
 
 const container = { hidden: {}, show: { transition: { staggerChildren: 0.04 } } };
 const itemV     = { hidden: { opacity: 0, y: 12 }, show: { opacity: 1, y: 0, transition: { duration: 0.25, ease: [0.22,1,0.36,1] } } };
@@ -62,10 +60,6 @@ export default function LibraryView({ onSearch }) {
   const [trashFiles, setTrashFiles] = useState([]);
   const [trashLoading, setTrashLoading] = useState(false);
   const sortRef = useRef(null);
-
-  const activeFile = state.openFile;
-  const showTagModal   = activeFile?._tagMode;
-  const showShareModal = activeFile?._shareMode;
 
   useEffect(() => { loadReadyThumbnails(); }, []);
   useEffect(() => { loadProgress(); }, []);
@@ -166,28 +160,6 @@ export default function LibraryView({ onSearch }) {
   }, [state.activeSection, activeFolderObj, state.activeTag]);
 
   const selectedCount = state.selectedFiles.size;
-
-  // ── Tag / Share modal routing (piggybacks on openFile state) ──────────────
-  if (showTagModal) {
-    return (
-      <AnimatePresence>
-        <TagModal
-          file={{ ...activeFile, _tagMode: undefined }}
-          onClose={() => actions.closeFile()}
-        />
-      </AnimatePresence>
-    );
-  }
-  if (showShareModal) {
-    return (
-      <AnimatePresence>
-        <ShareModal
-          file={{ ...activeFile, _shareMode: undefined }}
-          onClose={() => actions.closeFile()}
-        />
-      </AnimatePresence>
-    );
-  }
 
   if (state.filesLoading && state.files.length === 0) {
     return (
@@ -431,6 +403,10 @@ export default function LibraryView({ onSearch }) {
                   progress={progresses[file.id]}
                   thumbnailUrl={hasThumbnail(file.type) && isThumbnailReady(file.id) ? getThumbnailUrl(file.id) : undefined}
                   onProgressUpdate={loadProgress}
+                  isSelected={state.selectedFiles.has(file.id)}
+                  isFav={state.favorites.includes(file.id)}
+                  fileTags={state.fileTags[file.id] || []}
+                  hasSelection={selectedCount > 0}
                 />
               </motion.div>
             ))}
@@ -457,6 +433,10 @@ export default function LibraryView({ onSearch }) {
                       thumbnailUrl={hasThumbnail(file.type) && isThumbnailReady(file.id) ? getThumbnailUrl(file.id) : undefined}
                       listMode
                       onProgressUpdate={loadProgress}
+                      isSelected={state.selectedFiles.has(file.id)}
+                      isFav={state.favorites.includes(file.id)}
+                      fileTags={state.fileTags[file.id] || []}
+                      hasSelection={selectedCount > 0}
                     />
                     {timeLeft && state.activeSection === 'continue' && (
                       <span className="absolute right-10 top-1/2 -translate-y-1/2 text-[10px] text-accent/70 hidden md:block pointer-events-none">
